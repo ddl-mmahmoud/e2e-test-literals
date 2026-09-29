@@ -11,7 +11,6 @@ from __future__ import annotations
 import contextlib
 import importlib.abc
 import importlib.machinery
-import inspect
 import sys
 import types
 from pathlib import Path
@@ -82,14 +81,28 @@ class _FallbackStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         self.stubbed: set[str] = set()
 
     def _importing_file_is_under_repo(self) -> bool:
-        for frame_info in inspect.stack(context=0):
-            filename = frame_info.filename
-            if "importlib" in filename or filename.startswith("<frozen"):
-                continue
-            try:
-                return Path(filename).resolve().is_relative_to(self._repo_root)
-            except (OSError, ValueError):
-                return False
+        # Walk raw frames via sys._getframe rather than inspect.stack(): the latter
+        # resolves each frame through inspect.getmodule(), which scans sys.modules
+        # and reads `__file__` off whatever it finds there -- including modules
+        # this very finder already stubbed, whose __getattr__ returns a _StubAttr
+        # for *any* name, `__file__` included (confirmed: broke inspect.getsourcefile
+        # that way). Raw frames only need f_code.co_filename, no module lookups.
+        # The innermost frames here are this method's and find_spec's own -- in
+        # this file, not the code that triggered the import -- so skip past this
+        # module's frames too, not just importlib's, to reach the real caller.
+        frame = sys._getframe(0)
+        while frame is not None:
+            filename = frame.f_code.co_filename
+            if not (
+                filename == __file__
+                or "importlib" in filename
+                or filename.startswith("<frozen")
+            ):
+                try:
+                    return Path(filename).resolve().is_relative_to(self._repo_root)
+                except (OSError, ValueError):
+                    return False
+            frame = frame.f_back
         return False
 
     def find_spec(self, fullname, path, target=None):
