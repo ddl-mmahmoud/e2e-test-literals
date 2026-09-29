@@ -8,23 +8,12 @@ no deployment, no Selenium session, and nothing executed.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.abc
 import importlib.machinery
 import sys
 import types
 from pathlib import Path
-
-# These are swagger/openapi-generated clients (see tests/api-system-tests.md and
-# tests/.gitignore) that some custom step modules import transitively. They carry
-# no UI-literal content and this tool never calls their methods -- it only needs
-# `import steps` to succeed so the registry populates. Rather than requiring a
-# live deployment + `openapi-generator` (`tests/bin/setup.sh`) just to run a
-# static-analysis tool, stand in for whichever of these are not already generated.
-_GENERATED_CLIENT_DIRS = {
-    "domino_client_v4": "tests/domino_client_v4",
-    "domino_public_client": "tests/domino_public_client",
-    "steps.openapi": "tests/ui/features/steps/openapi",
-}
 
 _STEPS_PATH_ENTRIES = ("tests/ui/features", "tests")
 
@@ -46,15 +35,38 @@ class _StubAttr:
         return self
 
 
-class _GeneratedClientStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
-    """Synthesizes import-only stand-ins for the ungenerated packages in PREFIXES."""
+class _FallbackStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Last-resort stand-in for whatever `import steps` can't resolve on disk --
+    swagger/openapi-generated clients (`domino_client_v4`, `domino_public_client`,
+    `steps.openapi`, and any other client added to the target repo the same way,
+    present or future) chief among them. See tests/api-system-tests.md and
+    tests/.gitignore in that repo. They carry no UI-literal content and this tool
+    never calls their methods -- it only needs the `import` to succeed so the step
+    registry populates. Rather than requiring a live deployment + `openapi-generator`
+    (`tests/bin/setup.sh`) just to run a static-analysis tool, or enumerating every
+    such package by name (brittle: a rename, or a new client added the same way,
+    silently reintroduces the `ImportError` this exists to avoid), this is *appended*
+    to `sys.meta_path`, never inserted. `find_spec` is only reached once every real
+    finder -- including `PathFinder` over `sys.path`, which is what finds a client
+    that *has* been generated on disk -- has already said it can't resolve `fullname`,
+    so a real, resolvable module is never shadowed.
 
-    def __init__(self, prefixes: tuple[str, ...]) -> None:
-        self._prefixes = prefixes
+    Installed only for the duration of `import steps` in `bootstrap_step_registry`
+    (see `_stub_unresolved_imports` below), never around `import cucu.steps` --
+    that's an ordinary, fully-pip-installed dependency, and stubbing an unresolved
+    name inside *its* import graph risks papering over one of its own transitive
+    dependencies' legitimate `try: import optional_thing / except ImportError:`
+    fallback (confirmed: this broke `urllib3`'s optional zstd support that way
+    during testing) instead of a genuinely-missing generated client. Narrower than
+    that, an unrelated genuine `ImportError` elsewhere in this tool still surfaces
+    normally too.
+    """
+
+    def __init__(self) -> None:
+        self.stubbed: set[str] = set()
 
     def find_spec(self, fullname, path, target=None):
-        if not any(fullname == prefix or fullname.startswith(f"{prefix}.") for prefix in self._prefixes):
-            return None
+        self.stubbed.add(fullname)
         return importlib.machinery.ModuleSpec(fullname, self, is_package=True)
 
     def create_module(self, spec):
@@ -65,12 +77,24 @@ class _GeneratedClientStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loa
         module.__getattr__ = lambda name: _StubAttr()
 
 
-def _install_generated_client_stubs(repo_root: Path) -> None:
-    missing = tuple(
-        prefix for prefix, relative_dir in _GENERATED_CLIENT_DIRS.items() if not (repo_root / relative_dir).is_dir()
-    )
-    if missing:
-        sys.meta_path.insert(0, _GeneratedClientStubFinder(missing))
+@contextlib.contextmanager
+def _stub_unresolved_imports():
+    """Make any import that every real finder fails to resolve, inside this `with`
+    block, succeed as an empty stub instead of raising -- see `_FallbackStubFinder`.
+    Reports what it stubbed on the way out, so a genuinely-missing real dependency
+    (as opposed to an ungenerated client) doesn't just silently disappear."""
+    finder = _FallbackStubFinder()
+    sys.meta_path.append(finder)
+    try:
+        yield
+    finally:
+        sys.meta_path.remove(finder)
+        if finder.stubbed:
+            print(
+                "e2e-test-literals: stubbed unresolved imports (assumed generated "
+                f"API clients, never called): {', '.join(sorted(finder.stubbed))}",
+                file=sys.stderr,
+            )
 
 
 def bootstrap_step_registry(repo_root: Path) -> None:
@@ -81,14 +105,15 @@ def bootstrap_step_registry(repo_root: Path) -> None:
     `Runner.setup_paths` in behave's `runner.py`) and `tests` (so the
     `helpers`/`common` packages the custom steps import resolve) to `sys.path`,
     initializes cucu's hook-variable machinery (`cucu.environment` reaches into
-    it at import time), then imports `cucu.steps` followed by this repo's
-    `steps` package. Idempotent -- a second call is a no-op.
+    it at import time), then imports `cucu.steps` followed by this repo's `steps`
+    package -- the latter under `_stub_unresolved_imports` (see that function and
+    `_FallbackStubFinder`), so an ungenerated API client it transitively imports
+    doesn't need a live deployment or codegen just for this static-analysis tool.
+    Idempotent -- a second call is a no-op.
     """
     global _bootstrapped
     if _bootstrapped:
         return
-
-    _install_generated_client_stubs(repo_root)
 
     for relative_dir in _STEPS_PATH_ENTRIES:
         path = str(repo_root / relative_dir)
@@ -99,7 +124,12 @@ def bootstrap_step_registry(repo_root: Path) -> None:
 
     init_global_hook_variables()
 
-    import cucu.steps  # noqa: F401 -- registers cucu's built-in steps
-    import steps  # noqa: F401 -- registers this repo's custom steps
+    import cucu.steps  # noqa: F401 -- registers cucu's built-in steps -- an ordinary pip
+    # dependency, so left outside the stub window: any ImportError here is real, not an
+    # ungenerated client, and stubbing it could paper over e.g. urllib3's own optional-
+    # dependency try/except ImportError fallbacks (confirmed to break that way in testing).
+
+    with _stub_unresolved_imports():
+        import steps  # noqa: F401 -- registers this repo's custom steps
 
     _bootstrapped = True

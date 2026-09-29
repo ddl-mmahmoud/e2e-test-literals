@@ -33,6 +33,7 @@ dependencies = [
     "packaging>=24.1",
     "pandas>=2.2.3",
     "pexpect>=4.9.0",
+    "pydantic>=2.12.5",
     "pyotp>=2.9.0",
     "python-gitlab>=4.5.0",
     "python-keycloak>=0.29.1",

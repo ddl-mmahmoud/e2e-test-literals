@@ -31,10 +31,12 @@ class GitError(RuntimeError):
 
 # The subtree needed for `bootstrap_step_registry` to import this repo's custom step
 # modules (which pull in `common.*` and `helpers.*`) plus `discover_feature_files`/
-# `templated.py`'s AST scan. Not the generated `domino_client_v4`/`domino_public_client`
-# packages -- `bootstrap.py` stubs those out when absent -- and not `tests/api`,
-# `tests/setup`, `tests/bin` (nothing under `tests/ui/features/steps/**` imports from
-# them; widen this if a future `ImportError` says otherwise).
+# `templated.py`'s AST scan. Not any generated client package (`domino_client_v4`,
+# `domino_public_client`, `steps.openapi`, or any other added the same way) --
+# `bootstrap.py`'s `_stub_unresolved_imports` stands in for whichever of those aren't
+# already generated -- and not `tests/api`, `tests/setup`, `tests/bin` (nothing under
+# `tests/ui/features/steps/**` imports from them; widen this if a future `ImportError`
+# says otherwise).
 TESTS_SUBPATHS = ("tests/ui", "tests/common", "tests/helpers")
 
 
