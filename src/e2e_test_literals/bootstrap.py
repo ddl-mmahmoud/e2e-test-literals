@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import importlib.abc
 import importlib.machinery
+import inspect
 import sys
 import types
 from pathlib import Path
@@ -60,12 +61,50 @@ class _FallbackStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
     during testing) instead of a genuinely-missing generated client. Narrower than
     that, an unrelated genuine `ImportError` elsewhere in this tool still surfaces
     normally too.
+
+    That same risk reappears *inside* `import steps` itself, one level deeper than
+    the module above anticipated: `steps` transitively imports plenty of ordinary,
+    fully-installed real packages (`boto3`, `bs4`, `cryptography`, ...) that do their
+    own internal optional-dependency/platform probing the same way (`bs4.builder`
+    probing for `html5lib`, `multiprocessing.connection` probing for `_winapi`,
+    `botocore.httpsession` probing for `OpenSSL`) -- confirmed to break the same way
+    those do, each time this fired. A genuinely-missing generated client is always
+    imported directly by *this repo's own* code (`tests/...`), never from three or
+    six frames deep inside an already-resolved, real dependency's own module -- so
+    `find_spec` only stubs when the nearest non-importlib frame on the stack (the
+    actual `import`/`from ... import` statement) lives under `repo_root`. Anywhere
+    else, declining (returning `None`) lets the real `ModuleNotFoundError` surface
+    so that dependency's own guard handles it the way it was written to.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, repo_root: Path) -> None:
+        self._repo_root = repo_root.resolve()
         self.stubbed: set[str] = set()
 
+    def _importing_file_is_under_repo(self) -> bool:
+        for frame_info in inspect.stack(context=0):
+            filename = frame_info.filename
+            if "importlib" in filename or filename.startswith("<frozen"):
+                continue
+            try:
+                return Path(filename).resolve().is_relative_to(self._repo_root)
+            except (OSError, ValueError):
+                return False
+        return False
+
     def find_spec(self, fullname, path, target=None):
+        # Platform-specific stdlib modules (`_winapi`, `winreg`, `msvcrt`, ...) are
+        # unresolvable here for the same reason an ungenerated client is -- no real
+        # finder can find them on this platform -- but they're never generated
+        # clients, and CPython's own stdlib already guards every import of one behind
+        # `try/except ImportError`. `sys.stdlib_module_names` lists every stdlib
+        # module across all platforms, including ones absent on this one, so this
+        # needs no manual, brittle list.
+        top_level = fullname.split(".", 1)[0]
+        if top_level in sys.stdlib_module_names:
+            return None
+        if not self._importing_file_is_under_repo():
+            return None
         self.stubbed.add(fullname)
         return importlib.machinery.ModuleSpec(fullname, self, is_package=True)
 
@@ -78,12 +117,13 @@ class _FallbackStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 @contextlib.contextmanager
-def _stub_unresolved_imports():
-    """Make any import that every real finder fails to resolve, inside this `with`
-    block, succeed as an empty stub instead of raising -- see `_FallbackStubFinder`.
-    Reports what it stubbed on the way out, so a genuinely-missing real dependency
-    (as opposed to an ungenerated client) doesn't just silently disappear."""
-    finder = _FallbackStubFinder()
+def _stub_unresolved_imports(repo_root: Path):
+    """Make any import that every real finder fails to resolve, and whose own
+    `import` statement lives under `repo_root`, succeed as an empty stub instead of
+    raising -- see `_FallbackStubFinder`. Reports what it stubbed on the way out, so
+    a genuinely-missing real dependency (as opposed to an ungenerated client)
+    doesn't just silently disappear."""
+    finder = _FallbackStubFinder(repo_root)
     sys.meta_path.append(finder)
     try:
         yield
@@ -129,7 +169,7 @@ def bootstrap_step_registry(repo_root: Path) -> None:
     # ungenerated client, and stubbing it could paper over e.g. urllib3's own optional-
     # dependency try/except ImportError fallbacks (confirmed to break that way in testing).
 
-    with _stub_unresolved_imports():
+    with _stub_unresolved_imports(repo_root):
         import steps  # noqa: F401 -- registers this repo's custom steps
 
     _bootstrapped = True
