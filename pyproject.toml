@@ -1,0 +1,63 @@
+[project]
+name = "e2e-test-literals"
+version = "0.1.0"
+description = "Map TestRail cases to the UI literal/table-column values their cucu scenarios depend on, and look up which cases a batch of changed product literals affects."
+readme = "README.md"
+authors = [
+    { name = "Med Mahmoud", email = "med.mahmoud@dominodatalab.com" }
+]
+requires-python = ">=3.13, <4"
+dependencies = [
+    # bootstrap_step_registry()'s `import steps` unconditionally imports every module
+    # tests/ui/features/steps/__init__.py lists, not just what a given .feature file
+    # actually needs -- so the indexer inherits internal-e2e-tests-service's full
+    # runtime dependency closure for tests/common/tests/helpers/tests/ui, not just
+    # cucu/behave. Mirrors that repo's root pyproject.toml `[project.dependencies]`
+    # (same versions), minus entries that are dev/codegen-only there (pytest*,
+    # openapi-python-client, e2e-sdlc) and so aren't needed for this import chain.
+    "behave>=1.3.3",
+    "boto3>=1.35.33",
+    "camel-converter>=4.0.0",
+    "click>=8.1",
+    "cucu==1.4.36",
+    "databricks-sdk>=0.33.0",
+    "defusedxml>=0.7.0",
+    "docker>=7.1.0",
+    "domino-pytk",
+    "dominodatalab>=1.4.6",
+    "filelock>=3.16.1",
+    "gitpython>=3.1.43",
+    "httpx>=0.27.2",
+    "jinja2>=3.1.4",
+    "kubernetes>=31.0.0",
+    "packaging>=24.1",
+    "pandas>=2.2.3",
+    "pexpect>=4.9.0",
+    "pyotp>=2.9.0",
+    "python-gitlab>=4.5.0",
+    "python-keycloak>=0.29.1",
+    "requests>=2.32.3",
+    "ruamel.yaml>=0.19.1",
+    "scikit-image>=0.24.0",
+    "selenium>=4.38.0",
+    "tenacity>=9.0.0",
+    "testrail-api>=1.13.2",
+    "urllib3>=2.1.0,<3",
+]
+
+[project.scripts]
+e2e-test-literals = "e2e_test_literals:cli"
+e2e-test-literals-lookup = "e2e_test_literals.lookup:cli"
+
+[build-system]
+requires = ["uv_build>=0.9.6,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+domino-pytk = { git = "git+ssh://git@github.com/cerebrotech/domino-pytk", tag = "14.0.0" }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-check>=2.4.0",
+]
