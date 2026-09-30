@@ -85,6 +85,24 @@ def test_index_returns_usage(service_env: TestClient):
     assert "revisions" in resp.json()["usage"]
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "favicon.ico",
+        "robots.txt",
+        "index.html",
+        "index.htm",
+        "apple-touch-icon.png",
+        "apple-touch-icon-precomposed.png",
+    ],
+)
+def test_well_known_paths_are_not_treated_as_a_revision_sha(service_env: TestClient, path: str):
+    # Regression: browsers/crawlers request these unprompted, and they must not fall
+    # through to the catch-all proxy routes and get treated as a revision sha.
+    resp = service_env.get(f"/{path}")
+    assert resp.status_code == 404
+
+
 def test_revision_job_status_404_for_unknown_job(service_env: TestClient):
     resp = service_env.get("/revisions/jobs/does-not-exist")
     assert resp.status_code == 404

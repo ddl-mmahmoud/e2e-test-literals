@@ -160,11 +160,32 @@ async def proxy_revision(sha: str, path: str, request: Request):
     return await proxy_request(request, socket_path, f"{sha}/{path}")
 
 
+# Well-known single-segment paths browsers/crawlers request unprompted, not on behalf
+# of any caller who actually means a revision sha. Without explicit routes these fall
+# through to the catch-all proxy routes below and get treated as a revision sha
+# (spawning a doomed `datasette serve` lookup for e.g. a db named "favicon.ico.sqlite").
+# Must be registered before those catch-alls.
+_WELL_KNOWN_NON_REVISION_PATHS = [
+    "favicon.ico",
+    "robots.txt",
+    "index.html",
+    "index.htm",
+    "apple-touch-icon.png",
+    "apple-touch-icon-precomposed.png",
+]
+
+
+def _not_found() -> JSONResponse:
+    return JSONResponse(status_code=404, content={"detail": "not found"})
+
+
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
 app.add_api_route("/revisions", create_revision, methods=["POST"], status_code=202)
 app.add_api_route("/revisions/jobs/{job_id}", revision_job_status, methods=["GET"])
 app.add_api_route("/revisions/jobs/{job_id}/result", revision_job_result, methods=["GET"])
+for _path in _WELL_KNOWN_NON_REVISION_PATHS:
+    app.add_api_route(f"/{_path}", _not_found, methods=["GET"])
 # Registered last: both proxy routes below are catch-alls (one single-segment, one
 # multi-segment -- see proxy_revision_top's docstring for why both are needed), and
 # Starlette matches routes in registration order, so every more specific route above
@@ -176,6 +197,8 @@ if config.PREFIX != "/":
     app.add_api_route(config.PREFIX + "revisions", create_revision, methods=["POST"], status_code=202)
     app.add_api_route(config.PREFIX + "revisions/jobs/{job_id}", revision_job_status, methods=["GET"])
     app.add_api_route(config.PREFIX + "revisions/jobs/{job_id}/result", revision_job_result, methods=["GET"])
+    for _path in _WELL_KNOWN_NON_REVISION_PATHS:
+        app.add_api_route(config.PREFIX + _path, _not_found, methods=["GET"])
     app.add_api_route(config.PREFIX + "{sha_and_ext}", proxy_revision_top, methods=_PROXY_METHODS)
     app.add_api_route(config.PREFIX + "{sha}/{path:path}", proxy_revision, methods=_PROXY_METHODS)
 
