@@ -11,7 +11,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-DATA_DIR = Path(os.environ.get("E2E_TEST_LITERALS_SERVICE_DATA_DIR", "./e2e-test-literals-service-data"))
+# Resolved to absolute immediately: this is persistent, server-managed state, and a
+# relative path here would be reinterpreted against whatever directory the process
+# happens to be launched from. That previously let a git subprocess launched against
+# an under-populated cache dir walk up into this very deploy checkout's own `.git`
+# (found live: git fetch refusing to fetch into the checked-out `main` branch here).
+DATA_DIR = Path(os.environ.get("E2E_TEST_LITERALS_SERVICE_DATA_DIR", "./e2e-test-literals-service-data")).resolve()
 
 # Per-revision sqlite files, named `<sha>.sqlite`, retained forever (see
 # DATASETTE-WRAPPER-PLAN.md Q4 -- cleanup is a deliberate non-goal for now).
@@ -25,7 +30,7 @@ LOCK_DIR = DATA_DIR / "locks"
 # CHANGED_LITERALS_REPO_CACHE_DIR. Also retained forever; git itself packs/GCs it.
 REPO_CACHE_DIR = Path(
     os.environ.get("E2E_TEST_LITERALS_SERVICE_REPO_CACHE_DIR", str(DATA_DIR / "repo-cache"))
-)
+).resolve()
 
 # Unix domain socket paths have a short max length (~100 bytes on Linux, in the
 # kernel's sockaddr_un struct) -- kept short and independent of DATA_DIR, which

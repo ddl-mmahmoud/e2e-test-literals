@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -74,10 +75,46 @@ def _run(args: list[str], cwd: Path) -> subprocess.CompletedProcess[bytes]:
     return result
 
 
+def _run_repo(args: list[str], repo: Path) -> subprocess.CompletedProcess[bytes]:
+    """Like `_run`, but for a command that operates on an existing (bare) repo.
+    Passes `--git-dir` explicitly rather than `cwd=repo` -- if `repo` turns out not to
+    be a valid git repo (empty, partially written, whatever), git fails fast with a
+    clear "not a git repository" error instead of silently walking *up* the directory
+    tree via its ambient repo-discovery and operating on some unrelated ancestor repo.
+    That upward walk is exactly what turned an empty/corrupt cache dir into a `git
+    fetch` against this very deploy checkout's own `.git` in production."""
+    result = subprocess.run(
+        ["git", *_SAFE_DIRECTORY_ARGS, "--git-dir", str(repo), *args], capture_output=True
+    )
+    if result.returncode != 0:
+        stderr = result.stderr.decode(errors="replace").strip()
+        raise GitError(f"git {' '.join(_redact(args))} failed: {stderr}")
+    return result
+
+
+def _is_valid_bare_repo(repo: Path) -> bool:
+    return subprocess.run(
+        ["git", *_SAFE_DIRECTORY_ARGS, "--git-dir", str(repo), "rev-parse", "--is-bare-repository"],
+        capture_output=True,
+    ).returncode == 0
+
+
 def ensure_repo_cache(repo_url: str, cache_dir: Path) -> None:
     """Make cache_dir a bare clone of repo_url, reusing it if already populated."""
+    # Resolved to absolute up front: the clone below runs with cwd=cache_dir.parent
+    # *and* passes cache_dir itself as the destination argument, so if cache_dir were
+    # relative, git would resolve that destination against cwd and double the path
+    # onto itself (e.g. `.../repo-cache/<hash>` cloning into
+    # `.../repo-cache/<cache_dir-again>/<hash>`, leaving the intended dir empty
+    # forever). Confirmed live in production off a relative REPO_CACHE_DIR default.
+    cache_dir = cache_dir.resolve()
     if cache_dir.exists() and any(cache_dir.iterdir()):
-        return
+        # "Non-empty" alone isn't proof of a usable clone -- a prior run could have
+        # died mid-clone (or hit the double-join bug above) and left a partial
+        # directory behind. Re-clone rather than hand a broken repo to fetch_ref.
+        if _is_valid_bare_repo(cache_dir):
+            return
+        shutil.rmtree(cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
     _run(
         [*_auth_args(), "clone", "--quiet", "--bare", repo_url, str(cache_dir)],
@@ -87,16 +124,23 @@ def ensure_repo_cache(repo_url: str, cache_dir: Path) -> None:
 
 def _resolves(repo: Path, ref: str) -> bool:
     return subprocess.run(
-        ["git", *_SAFE_DIRECTORY_ARGS, "rev-parse", "--verify", "--quiet", ref],
-        cwd=repo,
+        ["git", *_SAFE_DIRECTORY_ARGS, "--git-dir", str(repo), "rev-parse", "--verify", "--quiet", ref],
         capture_output=True,
     ).returncode == 0
 
 
 def _is_local_branch(repo: Path, ref: str) -> bool:
     return subprocess.run(
-        ["git", *_SAFE_DIRECTORY_ARGS, "show-ref", "--verify", "--quiet", f"refs/heads/{ref}"],
-        cwd=repo,
+        [
+            "git",
+            *_SAFE_DIRECTORY_ARGS,
+            "--git-dir",
+            str(repo),
+            "show-ref",
+            "--verify",
+            "--quiet",
+            f"refs/heads/{ref}",
+        ],
         capture_output=True,
     ).returncode == 0
 
@@ -109,7 +153,7 @@ def fetch_ref(repo: Path, ref: str, *, force: bool = False) -> None:
     resolves = _resolves(repo, ref)
     if resolves and not (force and _is_local_branch(repo, ref)):
         return
-    _run([*_auth_args(), "fetch", "--quiet", "origin", f"+{ref}:refs/heads/{ref}"], cwd=repo)
+    _run_repo([*_auth_args(), "fetch", "--quiet", "origin", f"+{ref}:refs/heads/{ref}"], repo)
 
 
 def resolve_commit_sha(repo_url: str, ref: str, repo_cache: Path) -> str:
@@ -122,7 +166,7 @@ def resolve_commit_sha(repo_url: str, ref: str, repo_cache: Path) -> str:
     each revision's generated db by an immutable SHA rather than a mutable ref name."""
     ensure_repo_cache(repo_url, repo_cache)
     fetch_ref(repo_cache, ref, force=True)
-    return _run(["rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo_cache).stdout.decode().strip()
+    return _run_repo(["rev-parse", "--verify", f"{ref}^{{commit}}"], repo_cache).stdout.decode().strip()
 
 
 def materialize_subtree(repo_dir: Path, ref: str, subpaths: tuple[str, ...], dest: Path) -> None:
@@ -132,7 +176,7 @@ def materialize_subtree(repo_dir: Path, ref: str, subpaths: tuple[str, ...], des
     downstream needs `.git` plumbing in the materialized copy, only the files, and this
     stays stateless per call (no worktree registration/cleanup on the shared bare cache).
     """
-    archive = _run(["archive", "--format=tar", ref, "--", *subpaths], cwd=repo_dir).stdout
+    archive = _run_repo(["archive", "--format=tar", ref, "--", *subpaths], repo_dir).stdout
     dest.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(suffix=".tar") as tmp_tar:
         tmp_tar.write(archive)
