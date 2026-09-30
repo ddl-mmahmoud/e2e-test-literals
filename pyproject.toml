@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "Med Mahmoud", email = "med.mahmoud@dominodatalab.com" }
 ]
-requires-python = ">=3.13, <4"
+requires-python = ">=3.12, <4"
 dependencies = [
     # bootstrap_step_registry()'s `import steps` unconditionally imports every module
     # tests/ui/features/steps/__init__.py lists, not just what a given .feature file
@@ -19,7 +19,7 @@ dependencies = [
     "boto3>=1.35.33",
     "camel-converter>=4.0.0",
     "click>=8.1",
-    "cucu==1.4.36",
+    "cucu==1.4.33",
     "databricks-sdk>=0.33.0",
     "datasette>=0.65.5",
     "defusedxml>=0.7.0",
@@ -60,7 +60,7 @@ requires = ["uv_build>=0.9.6,<0.10.0"]
 build-backend = "uv_build"
 
 [tool.uv.sources]
-domino-pytk = { git = "git+ssh://git@github.com/cerebrotech/domino-pytk", tag = "14.0.0" }
+domino-pytk = { git = "git+ssh://git@github.com/cerebrotech/domino-pytk", tag = "13.1.1" }
 
 [dependency-groups]
 dev = [
