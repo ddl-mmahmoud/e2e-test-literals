@@ -96,9 +96,11 @@ def test_index_returns_usage(service_env: TestClient):
         "apple-touch-icon-precomposed.png",
     ],
 )
-def test_well_known_paths_are_not_treated_as_a_revision_sha(service_env: TestClient, path: str):
-    # Regression: browsers/crawlers request these unprompted, and they must not fall
-    # through to the catch-all proxy routes and get treated as a revision sha.
+def test_well_known_root_paths_are_not_treated_as_a_revision_sha(service_env: TestClient, path: str):
+    # Regression: browsers/crawlers request these unprompted at the root, and they
+    # must not fall through to the (now /data/-rooted) catch-all proxy routes and get
+    # treated as a revision sha -- since those routes no longer live at the root at
+    # all, an ordinary unmatched-route 404 is exactly what should happen.
     resp = service_env.get(f"/{path}")
     assert resp.status_code == 404
 
@@ -144,16 +146,16 @@ def test_full_flow_build_then_query_through_the_proxy(service_env: TestClient, t
 
     result = service_env.get(f"/revisions/jobs/{job_id}/result").json()
     sha = result["sha"]
-    assert result["datasette_url"] == f"/{sha}"
+    assert result["datasette_url"] == f"/data/{sha}"
 
     # Bare single-segment route -> Datasette's db index.
-    index_resp = service_env.get(f"/{sha}.json")
+    index_resp = service_env.get(f"/data/{sha}.json")
     assert index_resp.status_code == 200
     table_names = {t["name"] for t in index_resp.json()["tables"]}
     assert "literals" in table_names
 
     # Multi-segment route -> a real table, with the actual generated literal in it.
-    table_resp = service_env.get(f"/{sha}/literals.json")
+    table_resp = service_env.get(f"/data/{sha}/literals.json")
     assert table_resp.status_code == 200
     table_body = table_resp.json()
     value_index = table_body["columns"].index("value")
@@ -161,9 +163,32 @@ def test_full_flow_build_then_query_through_the_proxy(service_env: TestClient, t
     assert "Saved successfully" in values
 
     # Bare single-segment route + ?sql= -> the raw SQL endpoint.
-    sql_resp = service_env.get(f"/{sha}.json", params={"sql": "select value from literals"})
+    sql_resp = service_env.get(f"/data/{sha}.json", params={"sql": "select value from literals"})
     assert sql_resp.status_code == 200
     assert ["Saved successfully"] in sql_resp.json()["rows"]
+
+    # Bare single-segment route + .db -> the raw sqlite file download.
+    db_resp = service_env.get(f"/data/{sha}.db")
+    assert db_resp.status_code == 200
+    assert db_resp.content[:16] == b"SQLite format 3\x00"
+
+    # Datasette's own HTML UI actually renders, and its static assets (previously
+    # swallowed by the sha-based catch-all, which treated the leading `-` as a bogus
+    # revision sha) are served correctly.
+    html_resp = service_env.get(f"/data/{sha}")
+    assert html_resp.status_code == 200
+    assert "/data/-/static/app.css" in html_resp.text
+
+    static_resp = service_env.get("/data/-/static/app.css")
+    assert static_resp.status_code == 200
+    assert "text/css" in static_resp.headers["content-type"]
+
+    # Regression: a HEAD request for a static asset must be handled by
+    # datasette_static_asset too, not fall through to the sha-based catch-all (which
+    # declares HEAD among its proxy methods and would otherwise swallow it, treating
+    # "-" as a bogus revision sha).
+    head_resp = service_env.head("/data/-/static/app.css")
+    assert head_resp.status_code == 200
 
 
 def test_second_job_for_the_same_revision_is_a_cache_hit(service_env: TestClient, tmp_path: Path, monkeypatch):

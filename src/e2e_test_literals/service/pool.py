@@ -139,18 +139,21 @@ class DatasettePool:
         # base_url is Datasette's *mount point*, not just link-generation cosmetics --
         # confirmed empirically: a request path that literally starts with the
         # configured base_url string has that prefix stripped before Datasette's own
-        # db-name/table-name routing runs. It must therefore be `config.PREFIX` alone,
-        # *never* `{config.PREFIX}{sha}/` -- the db name derived from this file is
+        # db-name/table-name routing runs. It must therefore be `config.DATA_PREFIX`
+        # (the fixed `{PREFIX}data/` segment app.py's proxy routes are mounted under),
+        # *never* `{config.DATA_PREFIX}{sha}/` -- the db name derived from this file is
         # itself `sha` (see db_path's `<sha>.sqlite` naming), so a base_url containing
         # `sha` would collide with and swallow that same segment out of every real
-        # request (verified: it turns `/{sha}/literals.json` into a lookup for a
-        # database literally named "literals", 404ing). With base_url set to just the
-        # external deployment prefix, Datasette's native `/{sha}.json` /
-        # `/{sha}/<table>.json` routes work completely unprefixed (app.py's proxy
-        # forwards the `sha` segment through unchanged, matching them one-to-one), and
-        # Datasette's self-generated links (pagination, HTML UI, static assets) still
-        # come out correctly prefixed for the real external address.
-        base_url = config.PREFIX
+        # request (verified: it turns `/data/{sha}/literals.json` into a lookup for a
+        # database literally named "literals", 404ing). With base_url set to just
+        # `{PREFIX}data/`, Datasette's native `/data/{sha}.json` /
+        # `/data/{sha}/<table>.json` routes work completely unprefixed beyond that
+        # fixed segment (app.py's proxy forwards the `sha` segment through unchanged,
+        # matching them one-to-one), and Datasette's self-generated links (pagination,
+        # HTML UI, static assets) come out correctly rooted at `{PREFIX}data/-/...`,
+        # which app.py serves directly rather than proxying (that request isn't tied
+        # to any one revision's subprocess -- see `datasette_static_asset`).
+        base_url = config.DATA_PREFIX
         argv = [
             "datasette",
             "serve",

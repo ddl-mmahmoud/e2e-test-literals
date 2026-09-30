@@ -24,19 +24,29 @@ it's done -- mirrors changed-literals' app.py:
                 endpoint (`...?sql=SELECT ...`), and anything else Datasette exposes.
                 409 while still pending/running, same as changed-literals.
 
-  <anything>/{sha}[.json]?sql=...      the raw arbitrary-SQL endpoint, and the db index
-  <anything>/{sha}/{table}.json         one table, with Datasette's usual filter DSL
-  <anything>/{sha}/...                  anything else Datasette exposes (canned
-                                         queries, CSV export, the HTML UI, ...)
+  <anything>/data/{sha}[.json|.db]?sql=...   the raw arbitrary-SQL endpoint, the db
+                                              index, and the raw sqlite download
+  <anything>/data/{sha}/{table}.json          one table, with Datasette's usual filter
+                                               DSL
+  <anything>/data/{sha}/...                   anything else Datasette exposes (canned
+                                               queries, CSV export, the HTML UI, ...)
 
              -> reverse-proxied straight into that revision's `datasette serve`
                 subprocess (see pool.py), started on demand if it isn't already
                 running. This is the "raw and standard as possible" interface itself --
                 everything under this path is Datasette's own API, untouched. Two
                 wrapper routes are needed (not one) because Datasette's own URL scheme
-                has both a bare, single-segment form (`/{sha}` / `/{sha}.json`, used by
-                the db index *and* the `?sql=` endpoint) and a multi-segment form
-                (`/{sha}/{table}.json`) -- see proxy_revision_top/proxy_revision below.
+                has both a bare, single-segment form (`/data/{sha}` / `/data/{sha}.json`
+                / `/data/{sha}.db`, used by the db index, the `?sql=` endpoint, and the
+                raw sqlite download) and a multi-segment form (`/data/{sha}/{table}.json`)
+                -- see proxy_revision_top/proxy_revision below.
+
+                Revision routes live under a fixed `/data/` segment rather than
+                directly at the root so that the root stays free for actual static
+                files (favicons, a future UI, ...) and so Datasette's own shared
+                `-/static/...` asset namespace -- not tied to any one revision -- can't
+                be swallowed by the sha-based catch-alls below (see
+                `datasette_static_asset`, and config.py's DATA_PREFIX).
 
 Environment variables: see service/config.py.
 """
@@ -44,9 +54,11 @@ Environment variables: see service/config.py.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 
+import datasette as _datasette_package
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -56,6 +68,12 @@ from .pool import pool
 from .proxy import proxy_request
 
 DEFAULT_REF = "main"
+
+# Datasette's own bundled static assets (app.css, table.js, codemirror, the SQL
+# formatter, ...) -- identical across every per-revision subprocess since they come
+# from the installed `datasette` package, not from any revision's db. See
+# `datasette_static_asset` below for why the wrapper serves these directly.
+_DATASETTE_STATIC_DIR = Path(_datasette_package.__file__).parent / "static"
 
 
 @asynccontextmanager
@@ -86,9 +104,10 @@ def _job_result_path(job_id: str) -> str:
 def _datasette_url(sha: str) -> str:
     # Bare, no trailing slash -- Datasette's own canonical single-segment db-index
     # URL (its self-generated links use this exact shape too, e.g. a table's `path`
-    # field). `{url}.json` is the db index as JSON and doubles as the raw SQL endpoint
-    # (`{url}.json?sql=...`); `{url}/{table}.json` is a single table.
-    return f"{config.PREFIX}{sha}"
+    # field), rooted under DATA_PREFIX (see config.py). `{url}.json` is the db index
+    # as JSON and doubles as the raw SQL endpoint (`{url}.json?sql=...`);
+    # `{url}/{table}.json` is a single table.
+    return f"{config.DATA_PREFIX}{sha}"
 
 
 def _job_body(job: Job) -> dict:
@@ -138,11 +157,26 @@ def revision_job_result(job_id: str) -> dict:
     return {"sha": job.sha, "datasette_url": _datasette_url(job.sha)}
 
 
+_SHA_EXTENSIONS = (".json", ".db")
+
+
+def _strip_sha_extension(sha_and_ext: str) -> str:
+    """Datasette's single-segment URL allows a `.json` suffix (db index / raw-SQL
+    endpoint as JSON) or a `.db` suffix (download the raw sqlite file) after the db
+    name -- strip whichever is present to recover the bare sha for pool lookup.
+    `sha_and_ext` itself (forwarded to Datasette unchanged) is untouched."""
+    for ext in _SHA_EXTENSIONS:
+        if sha_and_ext.endswith(ext):
+            return sha_and_ext[: -len(ext)]
+    return sha_and_ext
+
+
 async def proxy_revision_top(sha_and_ext: str, request: Request):
     """Handles Datasette's bare, single-path-segment URLs: the db index
-    (`/{sha}` / `/{sha}.json`) and the raw SQL endpoint, which is the db index plus a
-    `?sql=` query param on the same path -- there is no separate "/sql" route."""
-    sha = sha_and_ext[: -len(".json")] if sha_and_ext.endswith(".json") else sha_and_ext
+    (`/data/{sha}` / `/data/{sha}.json`), the raw SQL endpoint (the db index plus a
+    `?sql=` query param on the same path -- there is no separate "/sql" route), and the
+    raw sqlite download (`/data/{sha}.db`)."""
+    sha = _strip_sha_extension(sha_and_ext)
     socket_path = await run_in_threadpool(pool.ensure_started, sha)
     # `sha_and_ext` is already exactly Datasette's own native path for this request
     # (see pool.py's `_spawn` on why base_url is set so no further rewriting is
@@ -155,28 +189,22 @@ async def proxy_revision(sha: str, path: str, request: Request):
     # Reconstruct the `sha` segment rather than stripping it: it's simultaneously our
     # own routing segment *and* Datasette's own db-name-from-filename segment (the db
     # is literally named `sha`, see generation.py's `<sha>.sqlite` naming) -- Datasette
-    # needs it once, e.g. `/{sha}/literals.json`, not zero times (see pool.py's
+    # needs it once, e.g. `/data/{sha}/literals.json`, not zero times (see pool.py's
     # `_spawn` for why base_url can't be used to add it back instead).
     return await proxy_request(request, socket_path, f"{sha}/{path}")
 
 
-# Well-known single-segment paths browsers/crawlers request unprompted, not on behalf
-# of any caller who actually means a revision sha. Without explicit routes these fall
-# through to the catch-all proxy routes below and get treated as a revision sha
-# (spawning a doomed `datasette serve` lookup for e.g. a db named "favicon.ico.sqlite").
-# Must be registered before those catch-alls.
-_WELL_KNOWN_NON_REVISION_PATHS = [
-    "favicon.ico",
-    "robots.txt",
-    "index.html",
-    "index.htm",
-    "apple-touch-icon.png",
-    "apple-touch-icon-precomposed.png",
-]
-
-
-def _not_found() -> JSONResponse:
-    return JSONResponse(status_code=404, content={"detail": "not found"})
+def datasette_static_asset(path: str) -> FileResponse:
+    """Serves Datasette's own bundled static assets directly rather than proxying them
+    to a per-revision subprocess: a request for one of these (`-/static/app.css`,
+    `-/static/table.js`, ...) isn't tied to any particular revision -- it's generated
+    by Datasette's `base_url`-relative links (see pool.py's `_spawn`) and is byte-for-
+    byte identical regardless of which subprocess would have served it, so there's no
+    single "right" subprocess to proxy it to, and no need to spin one up just for this."""
+    target = (_DATASETTE_STATIC_DIR / path).resolve()
+    if _DATASETTE_STATIC_DIR not in target.parents or not target.is_file():
+        raise HTTPException(status_code=404, detail="not found")
+    return FileResponse(target)
 
 
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
@@ -184,23 +212,25 @@ _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 app.add_api_route("/revisions", create_revision, methods=["POST"], status_code=202)
 app.add_api_route("/revisions/jobs/{job_id}", revision_job_status, methods=["GET"])
 app.add_api_route("/revisions/jobs/{job_id}/result", revision_job_result, methods=["GET"])
-for _path in _WELL_KNOWN_NON_REVISION_PATHS:
-    app.add_api_route(f"/{_path}", _not_found, methods=["GET"])
-# Registered last: both proxy routes below are catch-alls (one single-segment, one
-# multi-segment -- see proxy_revision_top's docstring for why both are needed), and
-# Starlette matches routes in registration order, so every more specific route above
-# must come first.
-app.add_api_route("/{sha_and_ext}", proxy_revision_top, methods=_PROXY_METHODS)
-app.add_api_route("/{sha}/{path:path}", proxy_revision, methods=_PROXY_METHODS)
+# Registered before the catch-alls below (Starlette matches routes in registration
+# order): a request for Datasette's shared static-asset namespace would otherwise be
+# swallowed by the sha-based catch-alls, which would treat the leading `-` segment as
+# a bogus revision sha.
+app.add_api_route(f"/{config.DATA_SEGMENT}-/static/{{path:path}}", datasette_static_asset, methods=["GET", "HEAD"])
+# Both proxy routes below are catch-alls (one single-segment, one multi-segment -- see
+# proxy_revision_top's docstring for why both are needed), rooted under DATA_SEGMENT
+# rather than directly at "/" so the root itself is never shadowed by them (see
+# config.py's DATA_PREFIX).
+app.add_api_route(f"/{config.DATA_SEGMENT}{{sha_and_ext}}", proxy_revision_top, methods=_PROXY_METHODS)
+app.add_api_route(f"/{config.DATA_SEGMENT}{{sha}}/{{path:path}}", proxy_revision, methods=_PROXY_METHODS)
 
 if config.PREFIX != "/":
     app.add_api_route(config.PREFIX + "revisions", create_revision, methods=["POST"], status_code=202)
     app.add_api_route(config.PREFIX + "revisions/jobs/{job_id}", revision_job_status, methods=["GET"])
     app.add_api_route(config.PREFIX + "revisions/jobs/{job_id}/result", revision_job_result, methods=["GET"])
-    for _path in _WELL_KNOWN_NON_REVISION_PATHS:
-        app.add_api_route(config.PREFIX + _path, _not_found, methods=["GET"])
-    app.add_api_route(config.PREFIX + "{sha_and_ext}", proxy_revision_top, methods=_PROXY_METHODS)
-    app.add_api_route(config.PREFIX + "{sha}/{path:path}", proxy_revision, methods=_PROXY_METHODS)
+    app.add_api_route(config.DATA_PREFIX + "-/static/{path:path}", datasette_static_asset, methods=["GET", "HEAD"])
+    app.add_api_route(config.DATA_PREFIX + "{sha_and_ext}", proxy_revision_top, methods=_PROXY_METHODS)
+    app.add_api_route(config.DATA_PREFIX + "{sha}/{path:path}", proxy_revision, methods=_PROXY_METHODS)
 
 
 @app.get("/")

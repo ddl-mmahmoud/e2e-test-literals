@@ -52,3 +52,12 @@ IDLE_TIMEOUT_SECONDS = float(os.environ.get("E2E_TEST_LITERALS_SERVICE_IDLE_TIME
 PREFIX = os.environ.get("DOMINO_RUN_HOST_PATH", "/")
 if not PREFIX.endswith("/"):
     PREFIX += "/"
+
+# Revision/Datasette-proxy routes live under this sub-path of PREFIX rather than
+# directly at PREFIX -- keeps PREFIX's own root free for other static files the
+# wrapper might need to serve, and keeps a request for Datasette's own shared
+# `-/static/...` asset namespace (not tied to any single revision) from colliding with
+# the sha-based catch-all proxy routes, which would otherwise treat the leading `-`
+# segment as a bogus revision sha (see app.py/pool.py).
+DATA_SEGMENT = "data/"
+DATA_PREFIX = PREFIX + DATA_SEGMENT
