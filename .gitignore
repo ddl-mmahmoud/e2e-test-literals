@@ -11,3 +11,6 @@ wheels/
 
 # Tool output
 *.sqlite
+
+# Data cache
+e2e-test-literals-service-data/
