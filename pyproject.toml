@@ -21,10 +21,12 @@ dependencies = [
     "click>=8.1",
     "cucu==1.4.36",
     "databricks-sdk>=0.33.0",
+    "datasette>=0.65.5",
     "defusedxml>=0.7.0",
     "docker>=7.1.0",
     "domino-pytk",
     "dominodatalab>=1.4.6",
+    "fastapi>=0.141.1",
     "filelock>=3.16.1",
     "gitpython>=3.1.43",
     "html5lib>=1.1",
@@ -45,11 +47,13 @@ dependencies = [
     "tenacity>=9.0.0",
     "testrail-api>=1.13.2",
     "urllib3>=2.1.0,<3",
+    "uvicorn>=0.53.0",
 ]
 
 [project.scripts]
 e2e-test-literals = "e2e_test_literals:cli"
 e2e-test-literals-lookup = "e2e_test_literals.lookup:cli"
+e2e-test-literals-service = "e2e_test_literals.service.app:main"
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]

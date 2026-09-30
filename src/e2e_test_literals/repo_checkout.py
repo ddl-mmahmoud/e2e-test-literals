@@ -112,6 +112,19 @@ def fetch_ref(repo: Path, ref: str, *, force: bool = False) -> None:
     _run([*_auth_args(), "fetch", "--quiet", "origin", f"+{ref}:refs/heads/{ref}"], cwd=repo)
 
 
+def resolve_commit_sha(repo_url: str, ref: str, repo_cache: Path) -> str:
+    """Resolve `ref` to a full commit SHA against a bare clone cached at `repo_cache`
+    (created via `ensure_repo_cache` if not already present), fetching `ref` first so a
+    moving branch name resolves to its current tip rather than whatever commit a
+    previous call happened to fetch. `^{commit}` peels an annotated tag down to the
+    commit it points at; a branch, SHA, or lightweight tag already resolves straight to
+    one. Used by the on-demand generation service (`service/generation.py`) to key
+    each revision's generated db by an immutable SHA rather than a mutable ref name."""
+    ensure_repo_cache(repo_url, repo_cache)
+    fetch_ref(repo_cache, ref, force=True)
+    return _run(["rev-parse", "--verify", f"{ref}^{{commit}}"], cwd=repo_cache).stdout.decode().strip()
+
+
 def materialize_subtree(repo_dir: Path, ref: str, subpaths: tuple[str, ...], dest: Path) -> None:
     """Extract `subpaths` at `ref` into `dest` as real files, preserving their full
     repo-relative paths (so `dest / "tests/ui/features"` etc. works exactly like a
