@@ -14,36 +14,36 @@ import importlib.machinery
 import sys
 import types
 from pathlib import Path
+from unittest.mock import MagicMock
 
 _STEPS_PATH_ENTRIES = ("tests/ui/features", "tests")
 
 _bootstrapped = False
 
 
-class _StubAttr:
+class _StubAttr(MagicMock):
     """Generic placeholder returned for any attribute access on a stubbed module.
 
-    Callable (so `SomeGeneratedClass(...)` inside an un-executed function body
-    would not itself raise ImportError-adjacent surprises) and infinitely
-    attribute-accessible. Also supports `|`, both ways round, so a stubbed
-    class used in a PEP 604 union type annotation (`Any | SomeGeneratedClient`,
-    evaluated eagerly -- e.g. as a variable annotation's value, not deferred by
-    `from __future__ import annotations` -- or forced some other way) doesn't
-    raise `TypeError: unsupported operand type(s) for |` just because this
-    stand-in never defined the dunder a real class/type would get for free.
+    Just `MagicMock`, not further customized: it already does exactly what
+    this needs. Subscripting, iterating, comparing, arithmetic, using it as a
+    context manager -- real code can do almost anything to a class or instance
+    it imports, so rather than hand-rolling one dunder at a time as each
+    missing one surfaces (confirmed: happened twice already -- `__or__`/
+    `__ror__` for a PEP 604 union type annotation, then `__getitem__` for a
+    subscript -- before switching to this), inherit `MagicMock`'s existing
+    implementation of essentially every magic method, unmodified.
+
+    `__getattr__` and `__call__` are deliberately left alone, tempting as it
+    is to collapse both back to `self` (`MagicMock`'s own defaults instead
+    grow a tree of distinct, lazily-created child mocks per attribute/call
+    result): `MagicMock.__init__` itself reads attributes like
+    `_mock_methods` through plain attribute access before they're set, so
+    overriding `__getattr__` to return `self` unconditionally made `self`
+    stand in for *that*, too -- breaking Mock's own bootstrapping (confirmed:
+    `TypeError: '_StubAttr' object is not iterable` from inside
+    `_mock_set_magics`). The default child-mock tree costs more objects but
+    is what `MagicMock` is already built, and tested upstream, to do safely.
     """
-
-    def __call__(self, *args, **kwargs):
-        return self
-
-    def __getattr__(self, name):
-        return self
-
-    def __or__(self, other):
-        return self
-
-    def __ror__(self, other):
-        return self
 
 
 class _FallbackStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
