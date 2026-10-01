@@ -15,10 +15,17 @@ UI_PORT=8888
 mkdir -p "$(dirname "$API_SOCKET_PATH")"
 rm -f "$API_SOCKET_PATH"
 
-# The API process must not apply DOMINO_RUN_HOST_PATH itself: it's never reached
-# directly, only via the UI's internal, unprefixed calls (client.py / proxy.py).
+# The API process must not apply DOMINO_RUN_HOST_PATH to its own routing: it's never
+# reached directly, only via the UI's internal, unprefixed calls (client.py /
+# proxy.py). It still needs to know the real externally-visible prefix separately,
+# though (E2E_TEST_LITERALS_SERVICE_EXTERNAL_PREFIX, same value DOMINO_RUN_HOST_PATH
+# would have been), so each per-revision `datasette serve` it spawns roots its own
+# self-generated links (static assets, table/pagination links, ...) at the prefix a
+# browser -- reaching them through the UI's single exposed port, not this socket --
+# will actually request them at. See service/config.py's EXTERNAL_PREFIX docstring.
 env -u DOMINO_RUN_HOST_PATH \
     E2E_TEST_LITERALS_SERVICE_API_SOCKET_PATH="$API_SOCKET_PATH" \
+    E2E_TEST_LITERALS_SERVICE_EXTERNAL_PREFIX="${DOMINO_RUN_HOST_PATH:-/}" \
     uv run uvicorn src.e2e_test_literals.service.app:app --uds "$API_SOCKET_PATH" &
 API_PID=$!
 trap 'kill "$API_PID" 2>/dev/null || true' EXIT

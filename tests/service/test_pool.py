@@ -130,6 +130,30 @@ def test_ensure_started_after_eviction_respawns_from_the_still_on_disk_db(pool_e
     assert _get_over_uds(socket_path, "/").status_code == 200
 
 
+def test_spawn_roots_self_generated_links_at_external_prefix_not_internal_prefix(
+    pool_env: DatasettePool, monkeypatch
+):
+    """Reproduces the real deployment shape (app.sh): this process's own internal
+    PREFIX is "/" (never reached directly, only via service_ui's unprefixed internal
+    calls -- see config.py's EXTERNAL_PREFIX docstring), while EXTERNAL_PREFIX carries
+    the real Domino host path a browser actually reaches it under, via service_ui.
+    Datasette's own self-generated links (e.g. its static-asset links) must be rooted
+    at EXTERNAL_PREFIX, or a browser fetching one of them -- reaching only service_ui's
+    single exposed port -- never gets back to this process at all."""
+    monkeypatch.setattr(config, "PREFIX", "/")
+    monkeypatch.setattr(config, "DATA_PREFIX", "/data/")
+    monkeypatch.setattr(config, "EXTERNAL_PREFIX", "/e2e-test-literals/")
+    monkeypatch.setattr(config, "EXTERNAL_DATA_PREFIX", "/e2e-test-literals/data/")
+    _write_fake_revision_db("decafbad")
+
+    socket_path = pool_env.ensure_started("decafbad")
+
+    resp = _get_over_uds(socket_path, "/decafbad")
+    assert resp.status_code == 200
+    assert "/e2e-test-literals/data/-/static/" in resp.text
+    assert '"/data/-/static/' not in resp.text
+
+
 def test_shutdown_stops_every_running_process(pool_env: DatasettePool):
     _write_fake_revision_db("111111")
     _write_fake_revision_db("222222")

@@ -71,3 +71,24 @@ if not PREFIX.endswith("/"):
 # segment as a bogus revision sha (see app.py/pool.py).
 DATA_SEGMENT = "data/"
 DATA_PREFIX = PREFIX + DATA_SEGMENT
+
+# The path prefix at which this service's /data/ routes are ultimately reachable by a
+# browser -- almost always just PREFIX, *except* in the real deployment (app.sh), where
+# this process deliberately runs with DOMINO_RUN_HOST_PATH unset (so PREFIX is "/",
+# keeping its internal, never-through-Domino traffic with service_ui unprefixed) while
+# still being reverse-proxied, for actual browser traffic, by service_ui, which *does*
+# carry the real Domino host path. Datasette's own self-generated absolute links
+# (static assets, table/query/pagination links, ...) are rooted via its `base_url`
+# setting (see pool.py's `_spawn`) and must match that real external prefix, or a
+# browser fetching one of those links -- e.g. `-/static/app.css` -- 404s or never even
+# reaches this app, since Domino's gateway routes by host path prefix. Set this
+# independently of DOMINO_RUN_HOST_PATH (see app.sh) rather than threading the browser-
+# facing prefix through service_ui's API responses: that would mean teaching service_ui
+# about every URL shape Datasette can emit, instead of the one `base_url`-style knob
+# Datasette already exposes for exactly this. Defaults to PREFIX, so a standalone
+# deployment of this service (no separate UI reverse-proxying it) needs nothing extra.
+EXTERNAL_PREFIX = os.environ.get("E2E_TEST_LITERALS_SERVICE_EXTERNAL_PREFIX", PREFIX)
+if not EXTERNAL_PREFIX.endswith("/"):
+    EXTERNAL_PREFIX += "/"
+
+EXTERNAL_DATA_PREFIX = EXTERNAL_PREFIX + DATA_SEGMENT
