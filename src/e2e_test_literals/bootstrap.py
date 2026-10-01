@@ -25,13 +25,24 @@ class _StubAttr:
 
     Callable (so `SomeGeneratedClass(...)` inside an un-executed function body
     would not itself raise ImportError-adjacent surprises) and infinitely
-    attribute-accessible.
+    attribute-accessible. Also supports `|`, both ways round, so a stubbed
+    class used in a PEP 604 union type annotation (`Any | SomeGeneratedClient`,
+    evaluated eagerly -- e.g. as a variable annotation's value, not deferred by
+    `from __future__ import annotations` -- or forced some other way) doesn't
+    raise `TypeError: unsupported operand type(s) for |` just because this
+    stand-in never defined the dunder a real class/type would get for free.
     """
 
     def __call__(self, *args, **kwargs):
         return self
 
     def __getattr__(self, name):
+        return self
+
+    def __or__(self, other):
+        return self
+
+    def __ror__(self, other):
         return self
 
 
