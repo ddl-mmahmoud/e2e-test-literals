@@ -14,24 +14,27 @@ the upstream API over a Unix domain socket this app alone talks to).
 Routes:
   GET  /                                  the HTML page (page.py, static)
   GET  /api/revisions                     -> {"revisions": [...]}, passthrough from the
-                                              upstream API
+                                              upstream API, except each revision's
+                                              datasette_url is rebased under this app's
+                                              own PREFIX (see _rebase_datasette_url)
   POST /api/revisions   body {repo, ref}  -> {"job_id", "status", "status_url",
                                               "result_url"}, with status_url/result_url
                                               pointing back at this app's own routes
                                               below (not the upstream service's)
   GET  /api/revisions/jobs/{job_id}        upstream job status, passthrough
-  GET  /api/revisions/jobs/{job_id}/result upstream result, passthrough
+  GET  /api/revisions/jobs/{job_id}/result upstream result, passthrough, except
+                                              datasette_url is rebased as above
 
   <anything else>                         reverse-proxied unchanged to the upstream API
                                               (see proxy.py) -- chiefly each revision's
                                               Datasette pages, whatever path shape the
                                               upstream's `datasette_url` happens to use
                                               (`/data/<sha>/...` today). This is what
-                                              lets a `datasette_url` from the two
-                                              endpoints above stay a plain same-origin
-                                              path for the browser to open, even though
-                                              the upstream process isn't itself exposed
-                                              in this deployment.
+                                              lets a rebased `datasette_url` from the
+                                              two endpoints above stay a plain
+                                              same-origin path for the browser to open,
+                                              even though the upstream process isn't
+                                              itself exposed in this deployment.
 
 Environment variables: see config.py.
 """
@@ -65,8 +68,20 @@ def index() -> HTMLResponse:
     return HTMLResponse(PAGE_HTML)
 
 
+def _rebase_datasette_url(url: str) -> str:
+    """The upstream API's `datasette_url` is rooted under *its own* PREFIX (always `/`
+    in production -- see app.sh), not this UI's. Since every Datasette page is reverse-
+    proxied through this app's own origin (see proxy_passthrough below), the browser
+    needs the path rebased under this app's PREFIX instead, same idiom as
+    status_url/result_url in api_create_revision/api_job_status below."""
+    return config.PREFIX + url.lstrip("/")
+
+
 def api_list_revisions() -> dict:
-    return {"revisions": _call(client.list_revisions)}
+    revisions = _call(client.list_revisions)
+    for revision in revisions:
+        revision["datasette_url"] = _rebase_datasette_url(revision["datasette_url"])
+    return {"revisions": revisions}
 
 
 def api_create_revision(payload: RevisionRequest) -> dict:
@@ -91,7 +106,9 @@ def api_job_status(job_id: str) -> dict:
 
 
 def api_job_result(job_id: str) -> dict:
-    return _call(client.get_job_result, job_id)
+    result = _call(client.get_job_result, job_id)
+    result["datasette_url"] = _rebase_datasette_url(result["datasette_url"])
+    return result
 
 
 async def proxy_passthrough(path: str, request: Request):

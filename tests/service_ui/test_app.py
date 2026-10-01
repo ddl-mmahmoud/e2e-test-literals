@@ -48,8 +48,26 @@ def test_list_revisions_passthrough(ui_client: TestClient, monkeypatch):
     assert resp.status_code == 200
     # datasette_url stays a plain same-origin path -- the browser reaches it through
     # this app's own catch-all proxy (proxy_passthrough), not directly against
-    # API_SOCKET_PATH (which isn't even a TCP endpoint, see app.sh).
+    # API_SOCKET_PATH (which isn't even a TCP endpoint, see app.sh). Unchanged here
+    # because config.PREFIX is "/" by default in tests -- see
+    # test_list_revisions_rebases_datasette_url_under_this_app_prefix below for the
+    # non-default-PREFIX case.
     assert resp.json()["revisions"] == upstream_revisions
+
+
+def test_list_revisions_rebases_datasette_url_under_this_app_prefix(ui_client: TestClient, monkeypatch):
+    # The upstream service always reports datasette_url rooted at *its own* PREFIX
+    # (always "/" in production, see app.sh) -- this app must rebase it under its own
+    # PREFIX instead, same as status_url/result_url elsewhere in this file, since the
+    # browser reaches Datasette pages through this app's own origin.
+    monkeypatch.setattr(config, "PREFIX", "/e2e-test-literals/")
+    upstream_revisions = [
+        {"sha": "deadbeef", "datasette_url": "/data/deadbeef", "built_at": "2026-01-01T00:00:00+00:00", "running": True}
+    ]
+    monkeypatch.setattr(client, "list_revisions", lambda: upstream_revisions)
+    resp = ui_client.get("/api/revisions")
+    assert resp.status_code == 200
+    assert resp.json()["revisions"][0]["datasette_url"] == "/e2e-test-literals/data/deadbeef"
 
 
 def test_create_revision_points_status_and_result_url_at_this_app(ui_client: TestClient, monkeypatch):
@@ -91,7 +109,21 @@ def test_job_result_passthrough(ui_client: TestClient, monkeypatch):
     )
     resp = ui_client.get("/api/revisions/jobs/abc123/result")
     assert resp.status_code == 200
+    # Unchanged here because config.PREFIX is "/" by default in tests -- see
+    # test_job_result_rebases_datasette_url_under_this_app_prefix below.
     assert resp.json() == {"sha": "deadbeef", "datasette_url": "/data/deadbeef"}
+
+
+def test_job_result_rebases_datasette_url_under_this_app_prefix(ui_client: TestClient, monkeypatch):
+    monkeypatch.setattr(config, "PREFIX", "/e2e-test-literals/")
+    monkeypatch.setattr(
+        client,
+        "get_job_result",
+        lambda job_id: {"sha": "deadbeef", "datasette_url": "/data/deadbeef"},
+    )
+    resp = ui_client.get("/api/revisions/jobs/abc123/result")
+    assert resp.status_code == 200
+    assert resp.json() == {"sha": "deadbeef", "datasette_url": "/e2e-test-literals/data/deadbeef"}
 
 
 def test_upstream_error_passed_through(ui_client: TestClient, monkeypatch):
