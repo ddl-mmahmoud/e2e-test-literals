@@ -207,6 +207,34 @@ def test_list_revisions_reflects_built_dbs(service_env: TestClient, tmp_path: Pa
     assert entry["datasette_url"] == f"/data/{sha}"
     assert entry["running"] is True  # ensure_started eagerly warms it (Q11)
     assert entry["built_at"]  # non-empty ISO timestamp
+    assert entry["status"] == "ready"
+
+
+def test_list_revisions_includes_still_building_jobs(service_env: TestClient, tmp_path: Path):
+    repo = _make_test_repo(tmp_path)
+    built_job_id = service_env.post("/revisions", json={"repo": str(repo), "ref": "main"}).json()["job_id"]
+    _await_job(service_env, built_job_id)
+
+    # A pending job with no sqlite file yet (no corresponding build ever runs) -- stands
+    # in for a revision still mid-build.
+    pending_job = jobs.Job(id="still-building", status="pending", created_at=time.time())
+    with jobs._jobs_lock:
+        jobs._jobs[pending_job.id] = pending_job
+
+    revisions = service_env.get("/revisions").json()["revisions"]
+    assert len(revisions) == 2
+
+    building = next(r for r in revisions if r["status"] == "building")
+    assert building["sha"] is None
+    assert building["datasette_url"] is None
+    assert building["built_at"] is None
+    assert building["running"] is False
+    assert building["job_id"] == "still-building"
+    assert building["started_at"]  # non-empty ISO timestamp
+
+    # Newest first: the still-building job was registered after the finished build.
+    assert revisions[0]["status"] == "building"
+    assert revisions[1]["status"] == "ready"
 
 
 def test_second_job_for_the_same_revision_is_a_cache_hit(service_env: TestClient, tmp_path: Path, monkeypatch):

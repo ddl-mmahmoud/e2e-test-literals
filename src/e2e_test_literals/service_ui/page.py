@@ -30,6 +30,7 @@ PAGE_HTML = """\
   .status.ok { color: #1e8449; }
   .badge { font-size: .75rem; padding: .1rem .5rem; border-radius: .6rem; background: #8882; }
   .badge.running { background: #1e8449; color: white; }
+  .badge.building { background: #b9770e; color: white; }
 </style>
 </head>
 <body>
@@ -42,7 +43,7 @@ PAGE_HTML = """\
 </form>
 <div id="build-status" class="status"></div>
 
-<h2>Already built</h2>
+<h2>Revisions</h2>
 <button id="refresh" type="button">Refresh</button>
 <table>
   <thead><tr><th>SHA</th><th>Built</th><th>Status</th><th>Datasette</th></tr></thead>
@@ -66,22 +67,28 @@ async function loadRevisions() {
     if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
     const { revisions } = await resp.json();
     if (revisions.length === 0) {
-      tbody.innerHTML = "<tr><td colspan=4>No revisions built yet.</td></tr>";
+      tbody.innerHTML = "<tr><td colspan=4>No revisions yet.</td></tr>";
       return;
     }
     tbody.innerHTML = "";
     for (const r of revisions) {
+      const isBuilding = r.status === "building";
       const tr = document.createElement("tr");
-      const shaShort = r.sha.slice(0, 12);
-      const built = new Date(r.built_at).toLocaleString();
-      const badgeClass = r.running ? "badge running" : "badge";
-      const badgeText = r.running ? "running" : "idle";
+      const built = r.built_at
+        ? new Date(r.built_at).toLocaleString()
+        : `started ${new Date(r.started_at).toLocaleString()}`;
+      const badgeClass = isBuilding ? "badge building" : r.running ? "badge running" : "badge";
+      const badgeText = isBuilding ? "building" : r.running ? "running" : "idle";
 
       const shaCell = document.createElement("td");
-      const code = document.createElement("code");
-      code.title = r.sha;
-      code.textContent = shaShort;
-      shaCell.appendChild(code);
+      if (r.sha) {
+        const code = document.createElement("code");
+        code.title = r.sha;
+        code.textContent = r.sha.slice(0, 12);
+        shaCell.appendChild(code);
+      } else {
+        shaCell.textContent = "—";
+      }
 
       const builtCell = document.createElement("td");
       builtCell.textContent = built;
@@ -93,12 +100,14 @@ async function loadRevisions() {
       statusCell.appendChild(badge);
 
       const linkCell = document.createElement("td");
-      const link = document.createElement("a");
-      link.href = r.datasette_url;
-      link.target = "_blank";
-      link.rel = "noopener";
-      link.textContent = "open";
-      linkCell.appendChild(link);
+      if (r.datasette_url) {
+        const link = document.createElement("a");
+        link.href = r.datasette_url;
+        link.target = "_blank";
+        link.rel = "noopener";
+        link.textContent = "open";
+        linkCell.appendChild(link);
+      }
 
       tr.append(shaCell, builtCell, statusCell, linkCell);
       tbody.appendChild(tr);

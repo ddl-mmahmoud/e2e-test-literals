@@ -88,3 +88,11 @@ def create_job(repo: str, ref: str) -> tuple[Job, threading.Thread]:
 def get_job(job_id: str) -> Job | None:
     with _jobs_lock:
         return _jobs.get(job_id)
+
+
+def list_active_jobs() -> list[Job]:
+    """Snapshot of jobs still in flight (pending or running) -- lets a caller (see
+    `list_revisions` in app.py) surface "still building" revisions alongside already-
+    built ones, without the caller needing to take `_jobs_lock` itself."""
+    with _jobs_lock:
+        return [job for job in _jobs.values() if job.status in ("pending", "running")]

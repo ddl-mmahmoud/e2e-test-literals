@@ -14,7 +14,10 @@ the upstream API over a Unix domain socket this app alone talks to).
 Routes:
   GET  /                                  the HTML page (page.py, static)
   GET  /api/revisions                     -> {"revisions": [...]}, passthrough from the
-                                              upstream API, except each revision's
+                                              upstream API -- includes revisions still
+                                              building (status == "building", no
+                                              datasette_url yet) alongside already-built
+                                              ones -- except each built revision's
                                               datasette_url is rebased under this app's
                                               own PREFIX (see _rebase_datasette_url)
   POST /api/revisions   body {repo, ref}  -> {"job_id", "status", "status_url",
@@ -80,7 +83,10 @@ def _rebase_datasette_url(url: str) -> str:
 def api_list_revisions() -> dict:
     revisions = _call(client.list_revisions)
     for revision in revisions:
-        revision["datasette_url"] = _rebase_datasette_url(revision["datasette_url"])
+        # A still-building revision (status == "building") has no datasette_url yet --
+        # nothing to rebase.
+        if revision["datasette_url"]:
+            revision["datasette_url"] = _rebase_datasette_url(revision["datasette_url"])
     return {"revisions": revisions}
 
 

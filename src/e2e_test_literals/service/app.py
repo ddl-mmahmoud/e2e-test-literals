@@ -15,12 +15,17 @@ it's done -- mirrors changed-literals' app.py:
              -> 202 Accepted, body has job_id/status_url/result_url
 
   GET /revisions
-             -> {"revisions": [{"sha", "datasette_url", "built_at", "running"}, ...]},
-                newest first -- every revision that has finished building, discovered
-                directly from the sqlite files on disk (see `list_revisions` below).
-                Lets a caller (e.g. a separate UI, see Next steps in
-                DATASETTE-WRAPPER-PLAN.md) list what's already available without
-                tracking job ids of its own.
+             -> {"revisions": [
+                    {"sha", "datasette_url", "built_at", "running", "status": "ready"},
+                    {"sha": null, "datasette_url": null, "built_at": null, "running":
+                     false, "status": "building", "job_id", "started_at"},
+                    ...
+                ]}, newest first -- every revision that has finished building,
+                discovered directly from the sqlite files on disk, plus every revision
+                still mid-build, from the in-flight job registry (see `list_revisions`
+                below). Lets a caller (e.g. a separate UI, see Next steps in
+                DATASETTE-WRAPPER-PLAN.md) list everything in flight or already
+                available without tracking job ids of its own.
 
   GET /revisions/jobs/<job_id>
              -> job status: pending | running | done | error
@@ -72,7 +77,7 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 from . import config
-from .jobs import Job, create_job, get_job
+from .jobs import Job, create_job, get_job, list_active_jobs
 from .pool import pool
 from .proxy import proxy_request
 
@@ -139,23 +144,40 @@ async def create_revision(payload: RevisionRequest) -> JSONResponse:
 
 
 def list_revisions() -> dict:
-    """Every revision whose sqlite db has finished building, discovered directly from
-    `config.DB_DIR` rather than tracked in a separate index -- the db file's existence
-    on disk *is* the source of truth for "this revision is built" (generation.py writes
-    it via a temp-file-then-`os.replace`, so a partially-built revision never shows up
-    here; see its docstring). A revision still mid-build has no entry yet -- poll its
-    job instead."""
+    """Every already-built revision, discovered directly from `config.DB_DIR` -- the db
+    file's existence on disk *is* the source of truth for "this revision is built"
+    (generation.py writes it via a temp-file-then-`os.replace`, so a partially-built
+    revision never shows up here; see its docstring) -- plus every revision still
+    mid-build, from `jobs.list_active_jobs()`. The latter have no `sha`/`datasette_url`
+    yet (the job itself hasn't resolved a sha), so callers must treat `status` as the
+    field to branch on, not presence of those other fields."""
     config.DB_DIR.mkdir(parents=True, exist_ok=True)
-    revisions = [
+    built = [
         {
             "sha": db_file.stem,
             "datasette_url": _datasette_url(db_file.stem),
             "built_at": datetime.fromtimestamp(db_file.stat().st_mtime, tz=timezone.utc).isoformat(),
             "running": pool.is_running(db_file.stem),
+            "status": "ready",
         }
         for db_file in config.DB_DIR.glob("*.sqlite")
     ]
-    revisions.sort(key=lambda r: r["built_at"], reverse=True)
+    building = [
+        {
+            "sha": None,
+            "datasette_url": None,
+            "built_at": None,
+            "running": False,
+            "status": "building",
+            "job_id": job.id,
+            "started_at": datetime.fromtimestamp(job.created_at, tz=timezone.utc).isoformat(),
+        }
+        for job in list_active_jobs()
+    ]
+    revisions = built + building
+    # Both `built_at` and `started_at` are isoformat with an explicit timezone, so
+    # lexical sort order matches chronological order for either.
+    revisions.sort(key=lambda r: r["built_at"] or r["started_at"], reverse=True)
     return {"revisions": revisions}
 
 
