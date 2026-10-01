@@ -149,21 +149,48 @@ class _StubSecretsManagerClient:
         return {"SecretString": "{}"}
 
 
-@contextlib.contextmanager
-def _stub_secrets_manager_boto3():
-    """Keep `tests/common/secrets.py`'s module-level `SecretsManager()` singleton
-    from making a real AWS Secrets Manager network call during `import steps`.
+_SECRETS_MODULE_NAMES = ("common.secrets", "tests.common.secrets")
 
-    Patches `boto3.session.Session.client` -- the one call common to both branches
-    of that module's `__init__` (with or without `E2E_TEST_AWS_ACCESS_KEY_ID` set)
-    -- so a request for the `secretsmanager` service returns `_StubSecretsManagerClient`
-    instead of a real client. Any other service (if `steps` or something it imports
-    builds, say, an S3 client at import time too) still gets the real
-    `boto3.session.Session.client`, unpatched -- this only intercepts the one
-    service `tests/common/secrets.py` touches. `boto3.Session` is the same class
-    object as `boto3.session.Session` (aliased in `boto3/__init__.py`), so patching
-    the method here covers both spellings. Scoped to the `import steps` window only
-    and restored unconditionally.
+
+@contextlib.contextmanager
+def _stub_secrets_manager():
+    """Keep `tests/common/secrets.py` from either reaching AWS or raising/crashing
+    during `import steps`.
+
+    That module's `SecretsManager.__init__` already catches any exception from its
+    own boto3 calls broadly, leaving `self._secrets` as `{}` -- so on a machine with
+    no `e2e-test` AWS profile (the normal case for this static-analysis tool, which
+    never deploys anything) it already degrades without crashing *there*. But
+    `.get(name)` (`tests/common/secrets.py:47` at the time of writing) then raises
+    `KeyError` for any `name` not in `os.environ` either -- and at least one sibling
+    module this repo's own `import steps` chain reaches transitively (confirmed:
+    `tests/common/api_client.py`) calls `secrets.get(...)` as plain module-level
+    code, not inside a step body, so that `KeyError` reaches here uncaught. Two
+    patches, composed:
+
+    1. `boto3.session.Session.client` is patched so a request for the
+       `secretsmanager` service returns `_StubSecretsManagerClient` instead of a
+       real client -- so even when a real `e2e-test` profile/credentials *are*
+       present (unlike the common case above), no real AWS network call happens.
+       Any other service still gets the real `boto3.session.Session.client`,
+       unpatched. `boto3.Session` is the same class object as
+       `boto3.session.Session` (aliased in `boto3/__init__.py`), so patching the
+       method here covers both spellings.
+    2. `common.secrets` (or, in case some revision nests it differently,
+       `tests.common.secrets` -- see `_STEPS_PATH_ENTRIES` above for why the
+       unqualified name is the one this repo's own sys.path setup actually
+       resolves) is imported right here, under patch 1, *before* `import steps`
+       gets a chance to -- so it's already in `sys.modules`, and already patched
+       below, before any sibling module's own top-level code (like
+       `api_client.py`'s) can reach it. `SecretsManager.get` is wrapped to fall
+       back to `""` on `KeyError` instead of propagating it -- scoped to that one
+       outcome, so a genuinely different bug in that method (a `TypeError`, say)
+       still surfaces normally.
+
+    Both patches are undone unconditionally on the way out. The module isn't
+    present in every repo this tool indexes (this repo's own test fixtures use an
+    intentionally empty `steps` package -- see `tests/conftest.py`), so a missing
+    `common.secrets`/`tests.common.secrets` is not an error here, just a no-op.
     """
     import boto3.session
 
@@ -176,6 +203,27 @@ def _stub_secrets_manager_boto3():
 
     boto3.session.Session.client = _stub_client
     try:
+        secrets_module = None
+        for module_name in _SECRETS_MODULE_NAMES:
+            try:
+                secrets_module = importlib.import_module(module_name)
+            except ImportError:
+                continue
+            else:
+                break
+
+        secrets_manager_cls = getattr(secrets_module, "SecretsManager", None)
+        if secrets_manager_cls is not None:
+            real_get = secrets_manager_cls.get
+
+            def _get(self, secret_name, _real_get=real_get):
+                try:
+                    return _real_get(self, secret_name)
+                except KeyError:
+                    return ""
+
+            secrets_manager_cls.get = _get
+
         yield
     finally:
         boto3.session.Session.client = real_client
@@ -214,9 +262,10 @@ def bootstrap_step_registry(repo_root: Path) -> None:
     package -- the latter under `_stub_unresolved_imports` (see that function and
     `_FallbackStubFinder`), so an ungenerated API client it transitively imports
     doesn't need a live deployment or codegen just for this static-analysis tool,
-    and under `_stub_secrets_manager_boto3` (see that function), so
-    `tests/common/secrets.py`'s module-level `SecretsManager()` singleton doesn't
-    make a real AWS Secrets Manager call on the way in either. Idempotent -- a
+    and under `_stub_secrets_manager` (see that function), so
+    `tests/common/secrets.py`'s module-level `SecretsManager()` singleton neither
+    makes a real AWS Secrets Manager call nor raises `KeyError` out of `.get(...)`
+    for some sibling module's own module-level secret lookup. Idempotent -- a
     second call is a no-op.
     """
     global _bootstrapped
@@ -237,7 +286,7 @@ def bootstrap_step_registry(repo_root: Path) -> None:
     # ungenerated client, and stubbing it could paper over e.g. urllib3's own optional-
     # dependency try/except ImportError fallbacks (confirmed to break that way in testing).
 
-    with _stub_unresolved_imports(repo_root), _stub_secrets_manager_boto3():
+    with _stub_unresolved_imports(repo_root), _stub_secrets_manager():
         import steps  # noqa: F401 -- registers this repo's custom steps
 
     _bootstrapped = True
