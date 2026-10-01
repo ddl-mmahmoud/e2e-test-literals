@@ -5,8 +5,11 @@ mapping, not the upstream service (which has its own tests under tests/service/)
 
 from __future__ import annotations
 
+import socketserver
+import tempfile
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,7 +20,10 @@ from e2e_test_literals.service_ui import client, config
 
 @pytest.fixture
 def ui_client(monkeypatch):
-    monkeypatch.setattr(config, "API_BASE_URL", "http://upstream.example:8889")
+    # Never actually dialed in most of these tests (client.py's own functions are
+    # monkeypatched instead) -- only test_unmatched_path_is_proxied_to_the_upstream_api
+    # below points this at a real socket.
+    monkeypatch.setattr(config, "API_SOCKET_PATH", Path("/nonexistent/api.sock"))
     with TestClient(app_module.app) as test_client:
         yield test_client
 
@@ -42,7 +48,7 @@ def test_list_revisions_passthrough(ui_client: TestClient, monkeypatch):
     assert resp.status_code == 200
     # datasette_url stays a plain same-origin path -- the browser reaches it through
     # this app's own catch-all proxy (proxy_passthrough), not directly against
-    # API_BASE_URL (which may not even be externally reachable, see app.sh).
+    # API_SOCKET_PATH (which isn't even a TCP endpoint, see app.sh).
     assert resp.json()["revisions"] == upstream_revisions
 
 
@@ -122,21 +128,30 @@ class _FakeUpstreamHandler(BaseHTTPRequestHandler):
         pass
 
 
+class _ThreadingUnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
 @pytest.fixture
 def fake_upstream():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeUpstreamHandler)
+    # A short path straight under the system temp dir, not pytest's own (often
+    # long/nested) tmp_path -- Unix socket paths have a real ~108-byte length limit on
+    # Linux (see DATASETTE-WRAPPER-PLAN.md's note on config.SOCKET_DIR, bitten by this
+    # exact issue once already).
+    socket_path = Path(tempfile.mktemp(suffix=".sock", prefix="e2e-test-literals-ui-"))
+    server = _ThreadingUnixHTTPServer(str(socket_path), _FakeUpstreamHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        yield server.server_address
+        yield socket_path
     finally:
         server.shutdown()
         thread.join()
+        socket_path.unlink(missing_ok=True)
 
 
 def test_unmatched_path_is_proxied_to_the_upstream_api(ui_client: TestClient, monkeypatch, fake_upstream):
-    host, port = fake_upstream
-    monkeypatch.setattr(config, "API_BASE_URL", f"http://{host}:{port}")
+    monkeypatch.setattr(config, "API_SOCKET_PATH", fake_upstream)
 
     resp = ui_client.get("/data/deadbeef/literals.json?_sort=id")
 

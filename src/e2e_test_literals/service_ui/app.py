@@ -9,7 +9,7 @@ Everything it needs from that service it gets by calling its public HTTP API
 (`client.py`), the same way any other caller of that API would; the two apps share no
 Python state and run as entirely separate processes (see `main()` below,
 `pyproject.toml`'s separate console script, and repo-root `app.sh`, which runs both --
-the upstream API on a localhost-only port this app alone talks to).
+the upstream API over a Unix domain socket this app alone talks to).
 
 Routes:
   GET  /                                  the HTML page (page.py, static)

@@ -10,15 +10,24 @@ threading, or Datasette subprocess pool -- everything it needs from
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
-# Base URL of the e2e-test-literals-service API this UI is a front end for. Only needs
-# to be reachable from this process -- every request this UI can't handle itself,
-# including a revision's Datasette pages (datasette_url), is reverse-proxied through to
-# it (see proxy.py/app.py's `proxy_passthrough`), so the browser only ever talks to
-# this UI's own origin. In the default single-Domino-App deployment (see repo-root
-# app.sh) that API process is started on a localhost-only port and never exposed
-# directly.
-API_BASE_URL = os.environ.get("E2E_TEST_LITERALS_SERVICE_UI_API_BASE_URL", "http://localhost:8889").rstrip("/")
+# Unix domain socket of the e2e-test-literals-service API this UI is a front end for
+# (that process's own `config.API_SOCKET_PATH` -- see its docstring). Communicating
+# over a UDS rather than a TCP port means the two processes never touch the real
+# network stack to talk to each other, which matters because the Domino app hosting
+# both of them (see repo-root app.sh) only allows one port to be reached through its
+# ingress at all -- this socket isn't that port, and never needs to be. Every request
+# this UI can't handle itself, including a revision's Datasette pages (datasette_url),
+# is reverse-proxied through to it (see proxy.py/app.py's `proxy_passthrough`), so the
+# browser only ever talks to this UI's own origin. Must match whatever path the API
+# process was actually started with.
+API_SOCKET_PATH = Path(
+    os.environ.get(
+        "E2E_TEST_LITERALS_SERVICE_UI_API_SOCKET_PATH",
+        "/tmp/e2e-test-literals-service-sockets/api.sock",
+    )
+)
 
 # Same convention as service/config.py's PREFIX: Domino's proxy may or may not strip
 # this prefix before forwarding the request to the app, so every route this app serves

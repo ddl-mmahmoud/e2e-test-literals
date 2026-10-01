@@ -1,4 +1,5 @@
-"""A plain HTTP client for e2e-test-literals-service's public API (`service/app.py`).
+"""A plain HTTP client for e2e-test-literals-service's public API (`service/app.py`),
+reached over its Unix domain socket (`config.API_SOCKET_PATH`) rather than a TCP port.
 
 This is the *only* thing this UI shares with that service -- its documented wire
 contract (`POST/GET /revisions`, `GET /revisions/jobs/{id}[/result]`), not any Python
@@ -23,7 +24,10 @@ class APIError(RuntimeError):
 
 
 def _request(method: str, path: str, **kwargs) -> httpx.Response:
-    with httpx.Client(base_url=config.API_BASE_URL, timeout=30.0) as http_client:
+    # base_url's host is a placeholder -- the UDS transport is what actually routes
+    # the connection, matching service/pool.py's own UDS client pattern.
+    transport = httpx.HTTPTransport(uds=str(config.API_SOCKET_PATH))
+    with httpx.Client(transport=transport, base_url="http://api", timeout=30.0) as http_client:
         resp = http_client.request(method, path, **kwargs)
     if resp.is_success:
         return resp

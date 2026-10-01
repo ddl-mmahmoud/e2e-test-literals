@@ -1,16 +1,17 @@
-"""Reverse-proxies a request into the upstream e2e-test-literals-service API
-(`config.API_BASE_URL`) over plain HTTP, for anything this UI doesn't have its own
-route for -- chiefly each revision's Datasette pages (`/data/{sha}/...`, see
+"""Reverse-proxies a request into the upstream e2e-test-literals-service API, over its
+Unix domain socket (`config.API_SOCKET_PATH`), for anything this UI doesn't have its
+own route for -- chiefly each revision's Datasette pages (`/data/{sha}/...`, see
 `app.py`'s catch-all route). Forwards bytes, doesn't interpret them.
 
 This is what lets a `datasette_url` returned by the upstream API (e.g. `/data/<sha>`)
 stay a plain same-origin path for the browser to open, even when the upstream process
-isn't itself externally reachable in this deployment (see repo-root `app.sh`, which
-runs it on a localhost-only port and only exposes this UI's port).
+isn't itself externally reachable in this deployment (see repo-root `app.sh`): the
+upstream never binds a port at all, so there's nothing for the Domino app's
+single-port ingress to conflict with.
 
-A near-duplicate of `service/proxy.py`'s Unix-socket version by design: that module
-proxies into a per-revision Datasette subprocess over a UDS, this one proxies into the
-upstream API over TCP, and the two apps share no code (see client.py's docstring).
+A near-duplicate of `service/proxy.py` by design: that module proxies into a
+per-revision Datasette subprocess over a UDS, this one proxies into the upstream API
+over a (different) UDS, and the two apps share no code (see client.py's docstring).
 """
 
 from __future__ import annotations
@@ -43,12 +44,15 @@ def _filter_headers(items) -> list[tuple[str, str]]:
 
 
 async def proxy_to_api(request: Request, upstream_path: str) -> StreamingResponse:
-    """Forward `request` to `config.API_BASE_URL`, requesting `upstream_path` (plus the
-    original query string) there, and stream the response straight back.
+    """Forward `request` to the upstream API's Unix socket, requesting `upstream_path`
+    (plus the original query string) there, and stream the response straight back.
     `upstream_path` must already have the UI's own routing prefix stripped -- it's
     whatever path the upstream API itself would recognize (see app.py's
     `proxy_passthrough`)."""
-    client = httpx.AsyncClient(base_url=config.API_BASE_URL)
+    # base_url's host is a placeholder -- the UDS transport is what actually routes
+    # the connection, matching service/proxy.py's own UDS client pattern.
+    transport = httpx.AsyncHTTPTransport(uds=str(config.API_SOCKET_PATH))
+    client = httpx.AsyncClient(transport=transport, base_url="http://api")
 
     body = await request.body()
     upstream_request = client.build_request(

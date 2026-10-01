@@ -37,6 +37,16 @@ REPO_CACHE_DIR = Path(
 # callers may point somewhere with a long absolute path.
 SOCKET_DIR = Path(os.environ.get("E2E_TEST_LITERALS_SERVICE_SOCKET_DIR", "/tmp/e2e-test-literals-service-sockets"))
 
+# This process's own externally-facing API is bound to a Unix domain socket too, not
+# just the per-revision datasette subprocesses above -- the Domino app hosting this
+# exposes exactly one port through its ingress, and service_ui (a separate process in
+# the same app, see repo-root app.sh) is this API's only caller, so the two never need
+# the real network stack to talk to each other. Kept alongside the per-revision sockets
+# in SOCKET_DIR for the same short-path reason noted above.
+API_SOCKET_PATH = Path(
+    os.environ.get("E2E_TEST_LITERALS_SERVICE_API_SOCKET_PATH", str(SOCKET_DIR / "api.sock"))
+)
+
 # How long a finished job is kept in memory before being pruned (mirrors
 # changed-literals' CHANGED_LITERALS_JOB_RETENTION_SECONDS). Default 1 hour.
 JOB_RETENTION_SECONDS = float(os.environ.get("E2E_TEST_LITERALS_SERVICE_JOB_RETENTION_SECONDS", "3600"))

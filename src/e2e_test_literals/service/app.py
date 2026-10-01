@@ -281,7 +281,13 @@ def index() -> dict:
 def main() -> None:
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8889)
+    # Bound to a Unix domain socket, not a TCP port -- see config.API_SOCKET_PATH's
+    # docstring. uvicorn's own uds bind doesn't clear a stale socket file left behind
+    # by a prior process (unlike pool.py's per-revision spawn, which does this itself),
+    # so this must too, or a restart fails to bind with "address already in use".
+    config.API_SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.API_SOCKET_PATH.unlink(missing_ok=True)
+    uvicorn.run(app, uds=str(config.API_SOCKET_PATH))
 
 
 if __name__ == "__main__":
