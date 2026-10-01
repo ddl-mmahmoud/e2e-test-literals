@@ -36,7 +36,7 @@ PAGE_HTML = """\
 <h1>e2e-test-literals revisions</h1>
 
 <form id="build-form">
-  <input type="text" id="repo" placeholder="repo (git URL or local path)" required>
+  <input type="text" id="repo" placeholder="repo (git URL or local path)" value="https://github.com/cerebrotech/internal-e2e-tests-service" required>
   <input type="text" id="ref" placeholder="ref" value="main">
   <button type="submit">Build</button>
 </form>
