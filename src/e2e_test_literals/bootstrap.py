@@ -129,6 +129,58 @@ class _FallbackStubFinder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         module.__getattr__ = lambda name: _StubAttr()
 
 
+class _StubSecretsManagerClient:
+    """Stand-in for the boto3 `secretsmanager` client `tests/common/secrets.py`'s
+    module-level `SecretsManager()` singleton builds and calls as soon as it's
+    imported -- plain module-level code, not inside a step body, so this repo's
+    own `bootstrap_step_registry` always reaches it. `list_secrets` resolving to no
+    secrets short-circuits that module's `if secret_list:` check, so
+    `get_secret_value` is never actually reached in practice; it's stubbed anyway
+    in case that guard ever moves. Either way `self._secrets` ends up `{}`, matching
+    what already happens today when the real call fails (e.g. no `e2e-test` AWS
+    profile on this machine) -- that module catches any exception from these calls
+    broadly -- just without the real network round-trip, credentials, or profile.
+    """
+
+    def list_secrets(self, *args, **kwargs):
+        return {"SecretList": []}
+
+    def get_secret_value(self, *args, **kwargs):
+        return {"SecretString": "{}"}
+
+
+@contextlib.contextmanager
+def _stub_secrets_manager_boto3():
+    """Keep `tests/common/secrets.py`'s module-level `SecretsManager()` singleton
+    from making a real AWS Secrets Manager network call during `import steps`.
+
+    Patches `boto3.session.Session.client` -- the one call common to both branches
+    of that module's `__init__` (with or without `E2E_TEST_AWS_ACCESS_KEY_ID` set)
+    -- so a request for the `secretsmanager` service returns `_StubSecretsManagerClient`
+    instead of a real client. Any other service (if `steps` or something it imports
+    builds, say, an S3 client at import time too) still gets the real
+    `boto3.session.Session.client`, unpatched -- this only intercepts the one
+    service `tests/common/secrets.py` touches. `boto3.Session` is the same class
+    object as `boto3.session.Session` (aliased in `boto3/__init__.py`), so patching
+    the method here covers both spellings. Scoped to the `import steps` window only
+    and restored unconditionally.
+    """
+    import boto3.session
+
+    real_client = boto3.session.Session.client
+
+    def _stub_client(self, service_name, *args, **kwargs):
+        if service_name == "secretsmanager":
+            return _StubSecretsManagerClient()
+        return real_client(self, service_name, *args, **kwargs)
+
+    boto3.session.Session.client = _stub_client
+    try:
+        yield
+    finally:
+        boto3.session.Session.client = real_client
+
+
 @contextlib.contextmanager
 def _stub_unresolved_imports(repo_root: Path):
     """Make any import that every real finder fails to resolve, and whose own
@@ -161,8 +213,11 @@ def bootstrap_step_registry(repo_root: Path) -> None:
     it at import time), then imports `cucu.steps` followed by this repo's `steps`
     package -- the latter under `_stub_unresolved_imports` (see that function and
     `_FallbackStubFinder`), so an ungenerated API client it transitively imports
-    doesn't need a live deployment or codegen just for this static-analysis tool.
-    Idempotent -- a second call is a no-op.
+    doesn't need a live deployment or codegen just for this static-analysis tool,
+    and under `_stub_secrets_manager_boto3` (see that function), so
+    `tests/common/secrets.py`'s module-level `SecretsManager()` singleton doesn't
+    make a real AWS Secrets Manager call on the way in either. Idempotent -- a
+    second call is a no-op.
     """
     global _bootstrapped
     if _bootstrapped:
@@ -182,7 +237,7 @@ def bootstrap_step_registry(repo_root: Path) -> None:
     # ungenerated client, and stubbing it could paper over e.g. urllib3's own optional-
     # dependency try/except ImportError fallbacks (confirmed to break that way in testing).
 
-    with _stub_unresolved_imports(repo_root):
+    with _stub_unresolved_imports(repo_root), _stub_secrets_manager_boto3():
         import steps  # noqa: F401 -- registers this repo's custom steps
 
     _bootstrapped = True
