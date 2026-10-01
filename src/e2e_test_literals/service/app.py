@@ -14,6 +14,14 @@ it's done -- mirrors changed-literals' app.py:
              body: {"repo": ..., "ref": "main" (optional, default "main")}
              -> 202 Accepted, body has job_id/status_url/result_url
 
+  GET /revisions
+             -> {"revisions": [{"sha", "datasette_url", "built_at", "running"}, ...]},
+                newest first -- every revision that has finished building, discovered
+                directly from the sqlite files on disk (see `list_revisions` below).
+                Lets a caller (e.g. a separate UI, see Next steps in
+                DATASETTE-WRAPPER-PLAN.md) list what's already available without
+                tracking job ids of its own.
+
   GET /revisions/jobs/<job_id>
              -> job status: pending | running | done | error
 
@@ -54,6 +62,7 @@ Environment variables: see service/config.py.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 import datasette as _datasette_package
@@ -127,6 +136,27 @@ async def create_revision(payload: RevisionRequest) -> JSONResponse:
     body = _job_body(job)
     thread.start()
     return JSONResponse(status_code=202, content=body, headers={"Location": _job_status_path(job.id)})
+
+
+def list_revisions() -> dict:
+    """Every revision whose sqlite db has finished building, discovered directly from
+    `config.DB_DIR` rather than tracked in a separate index -- the db file's existence
+    on disk *is* the source of truth for "this revision is built" (generation.py writes
+    it via a temp-file-then-`os.replace`, so a partially-built revision never shows up
+    here; see its docstring). A revision still mid-build has no entry yet -- poll its
+    job instead."""
+    config.DB_DIR.mkdir(parents=True, exist_ok=True)
+    revisions = [
+        {
+            "sha": db_file.stem,
+            "datasette_url": _datasette_url(db_file.stem),
+            "built_at": datetime.fromtimestamp(db_file.stat().st_mtime, tz=timezone.utc).isoformat(),
+            "running": pool.is_running(db_file.stem),
+        }
+        for db_file in config.DB_DIR.glob("*.sqlite")
+    ]
+    revisions.sort(key=lambda r: r["built_at"], reverse=True)
+    return {"revisions": revisions}
 
 
 def _get_job_or_404(job_id: str) -> Job:
@@ -210,6 +240,7 @@ def datasette_static_asset(path: str) -> FileResponse:
 _PROXY_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
 
 app.add_api_route("/revisions", create_revision, methods=["POST"], status_code=202)
+app.add_api_route("/revisions", list_revisions, methods=["GET"])
 app.add_api_route("/revisions/jobs/{job_id}", revision_job_status, methods=["GET"])
 app.add_api_route("/revisions/jobs/{job_id}/result", revision_job_result, methods=["GET"])
 # Registered before the catch-alls below (Starlette matches routes in registration
@@ -226,6 +257,7 @@ app.add_api_route(f"/{config.DATA_SEGMENT}{{sha}}/{{path:path}}", proxy_revision
 
 if config.PREFIX != "/":
     app.add_api_route(config.PREFIX + "revisions", create_revision, methods=["POST"], status_code=202)
+    app.add_api_route(config.PREFIX + "revisions", list_revisions, methods=["GET"])
     app.add_api_route(config.PREFIX + "revisions/jobs/{job_id}", revision_job_status, methods=["GET"])
     app.add_api_route(config.PREFIX + "revisions/jobs/{job_id}/result", revision_job_result, methods=["GET"])
     app.add_api_route(config.DATA_PREFIX + "-/static/{path:path}", datasette_static_asset, methods=["GET", "HEAD"])
@@ -240,7 +272,8 @@ def index() -> dict:
         "usage": (
             f'POST {config.PREFIX}revisions  body: {{"repo": ..., "ref": "main"}}'
             " -> 202 with status_url/result_url; result.datasette_url is that "
-            "revision's raw Datasette query interface (JSON table API + SQL endpoint)"
+            "revision's raw Datasette query interface (JSON table API + SQL endpoint). "
+            f"GET {config.PREFIX}revisions lists revisions already built."
         ),
     }
 

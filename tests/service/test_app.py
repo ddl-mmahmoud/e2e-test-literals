@@ -191,6 +191,24 @@ def test_full_flow_build_then_query_through_the_proxy(service_env: TestClient, t
     assert head_resp.status_code == 200
 
 
+def test_list_revisions_reflects_built_dbs(service_env: TestClient, tmp_path: Path):
+    assert service_env.get("/revisions").json() == {"revisions": []}
+
+    repo = _make_test_repo(tmp_path)
+    job_id = service_env.post("/revisions", json={"repo": str(repo), "ref": "main"}).json()["job_id"]
+    result = _await_job(service_env, job_id)
+    assert result["status"] == "done"
+    sha = service_env.get(f"/revisions/jobs/{job_id}/result").json()["sha"]
+
+    revisions = service_env.get("/revisions").json()["revisions"]
+    assert len(revisions) == 1
+    entry = revisions[0]
+    assert entry["sha"] == sha
+    assert entry["datasette_url"] == f"/data/{sha}"
+    assert entry["running"] is True  # ensure_started eagerly warms it (Q11)
+    assert entry["built_at"]  # non-empty ISO timestamp
+
+
 def test_second_job_for_the_same_revision_is_a_cache_hit(service_env: TestClient, tmp_path: Path, monkeypatch):
     repo = _make_test_repo(tmp_path)
     calls = []

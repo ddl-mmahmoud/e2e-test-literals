@@ -53,6 +53,7 @@ dependencies = [
 e2e-test-literals = "e2e_test_literals:cli"
 e2e-test-literals-lookup = "e2e_test_literals.lookup:cli"
 e2e-test-literals-service = "e2e_test_literals.service.app:main"
+e2e-test-literals-service-ui = "e2e_test_literals.service_ui.app:main"
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]
