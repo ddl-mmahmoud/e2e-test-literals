@@ -92,3 +92,12 @@ if not EXTERNAL_PREFIX.endswith("/"):
     EXTERNAL_PREFIX += "/"
 
 EXTERNAL_DATA_PREFIX = EXTERNAL_PREFIX + DATA_SEGMENT
+
+# Base URL of the sibling `changed-literals` Domino App (see
+# CHANGED-LITERALS-IMPACT-PLAN.md) -- a genuinely separate service reached over the
+# real network, unlike every other inter-process call in this codebase (all of which
+# stay within one Domino app over a Unix domain socket). No default: unlike this
+# module's other variables, there's no sensible value to fall back to for a real
+# external dependency; changed_literals_client.py raises a clear error if a caller
+# reaches it while this is unset.
+CHANGED_LITERALS_URL = os.environ.get("E2E_TEST_LITERALS_SERVICE_CHANGED_LITERALS_URL", "")

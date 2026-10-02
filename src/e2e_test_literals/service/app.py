@@ -37,6 +37,19 @@ it's done -- mirrors changed-literals' app.py:
                 endpoint (`...?sql=SELECT ...`), and anything else Datasette exposes.
                 409 while still pending/running, same as changed-literals.
 
+  POST /changed-literals-impact
+             body: {"test_repo": ..., "test_ref": "main", "literals_repo": ...,
+                    "base_ref": ..., "updated_ref": ..., "min_removal_confidence": 0.85}
+             -> 202 Accepted, same job_id/status_url/result_url shape as /revisions.
+                Builds the test revision if needed, asks changed-literals to diff
+                literals_repo between base_ref/updated_ref, and checks which of its
+                REMOVED findings (at/above min_removal_confidence) contain a literal
+                the test revision depends on. See impact.py and
+                CHANGED-LITERALS-IMPACT-PLAN.md for the full design.
+
+  GET /changed-literals-impact/jobs/<job_id>[/result]
+             -> same job-status/result shape as /revisions/jobs/<job_id>[/result].
+
   <anything>/data/{sha}[.json|.db]?sql=...   the raw arbitrary-SQL endpoint, the db
                                               index, and the raw sqlite download
   <anything>/data/{sha}/{table}.json          one table, with Datasette's usual filter
@@ -76,7 +89,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from . import config
+from . import config, impact, impact_jobs
 from .jobs import Job, create_job, get_job, list_active_jobs
 from .pool import pool
 from .proxy import proxy_request
@@ -105,6 +118,15 @@ app = FastAPI(title="e2e-test-literals-service", lifespan=_lifespan)
 class RevisionRequest(BaseModel):
     repo: str
     ref: str = DEFAULT_REF
+
+
+class ImpactRequest(BaseModel):
+    test_repo: str
+    test_ref: str = DEFAULT_REF
+    literals_repo: str
+    base_ref: str
+    updated_ref: str
+    min_removal_confidence: float = impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
 
 
 def _job_status_path(job_id: str) -> str:
@@ -209,6 +231,64 @@ def revision_job_result(job_id: str) -> dict:
     return {"sha": job.sha, "datasette_url": _datasette_url(job.sha)}
 
 
+def _impact_job_status_path(job_id: str) -> str:
+    return f"{config.PREFIX}changed-literals-impact/jobs/{job_id}"
+
+
+def _impact_job_result_path(job_id: str) -> str:
+    return f"{config.PREFIX}changed-literals-impact/jobs/{job_id}/result"
+
+
+def _impact_job_body(job: impact_jobs.ImpactJob) -> dict:
+    body = {"job_id": job.id, "status": job.status, "status_url": _impact_job_status_path(job.id)}
+    if job.status == "error":
+        body["error"] = job.error
+    if job.status == "done":
+        body["result_url"] = _impact_job_result_path(job.id)
+    return body
+
+
+async def create_impact_job(payload: ImpactRequest) -> JSONResponse:
+    job, thread = impact_jobs.create_job(
+        payload.test_repo,
+        payload.test_ref,
+        payload.literals_repo,
+        payload.base_ref,
+        payload.updated_ref,
+        payload.min_removal_confidence,
+    )
+    # Snapshot before starting the thread -- same race as create_revision above.
+    body = _impact_job_body(job)
+    thread.start()
+    return JSONResponse(status_code=202, content=body, headers={"Location": _impact_job_status_path(job.id)})
+
+
+def _get_impact_job_or_404(job_id: str) -> impact_jobs.ImpactJob:
+    job = impact_jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"no such job {job_id!r}")
+    return job
+
+
+def impact_job_status(job_id: str) -> dict:
+    return _impact_job_body(_get_impact_job_or_404(job_id))
+
+
+def impact_job_result(job_id: str) -> dict:
+    job = _get_impact_job_or_404(job_id)
+
+    if job.status in ("pending", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"job {job_id} is {job.status}; poll {_impact_job_status_path(job_id)} until done",
+        )
+    if job.status == "error":
+        raise HTTPException(status_code=500, detail=job.error)
+
+    assert job.result is not None  # status == "done" guarantees this
+    return job.result
+
+
 _SHA_EXTENSIONS = (".json", ".db")
 
 
@@ -265,6 +345,9 @@ app.add_api_route("/revisions", create_revision, methods=["POST"], status_code=2
 app.add_api_route("/revisions", list_revisions, methods=["GET"])
 app.add_api_route("/revisions/jobs/{job_id}", revision_job_status, methods=["GET"])
 app.add_api_route("/revisions/jobs/{job_id}/result", revision_job_result, methods=["GET"])
+app.add_api_route("/changed-literals-impact", create_impact_job, methods=["POST"], status_code=202)
+app.add_api_route("/changed-literals-impact/jobs/{job_id}", impact_job_status, methods=["GET"])
+app.add_api_route("/changed-literals-impact/jobs/{job_id}/result", impact_job_result, methods=["GET"])
 # Registered before the catch-alls below (Starlette matches routes in registration
 # order): a request for Datasette's shared static-asset namespace would otherwise be
 # swallowed by the sha-based catch-alls, which would treat the leading `-` segment as
@@ -282,6 +365,11 @@ if config.PREFIX != "/":
     app.add_api_route(config.PREFIX + "revisions", list_revisions, methods=["GET"])
     app.add_api_route(config.PREFIX + "revisions/jobs/{job_id}", revision_job_status, methods=["GET"])
     app.add_api_route(config.PREFIX + "revisions/jobs/{job_id}/result", revision_job_result, methods=["GET"])
+    app.add_api_route(config.PREFIX + "changed-literals-impact", create_impact_job, methods=["POST"], status_code=202)
+    app.add_api_route(config.PREFIX + "changed-literals-impact/jobs/{job_id}", impact_job_status, methods=["GET"])
+    app.add_api_route(
+        config.PREFIX + "changed-literals-impact/jobs/{job_id}/result", impact_job_result, methods=["GET"]
+    )
     app.add_api_route(config.DATA_PREFIX + "-/static/{path:path}", datasette_static_asset, methods=["GET", "HEAD"])
     app.add_api_route(config.DATA_PREFIX + "{sha_and_ext}", proxy_revision_top, methods=_PROXY_METHODS)
     app.add_api_route(config.DATA_PREFIX + "{sha}/{path:path}", proxy_revision, methods=_PROXY_METHODS)
@@ -295,7 +383,11 @@ def index() -> dict:
             f'POST {config.PREFIX}revisions  body: {{"repo": ..., "ref": "main"}}'
             " -> 202 with status_url/result_url; result.datasette_url is that "
             "revision's raw Datasette query interface (JSON table API + SQL endpoint). "
-            f"GET {config.PREFIX}revisions lists revisions already built."
+            f"GET {config.PREFIX}revisions lists revisions already built. "
+            f"POST {config.PREFIX}changed-literals-impact  body: {{\"test_repo\": ..., "
+            '"test_ref": "main", "literals_repo": ..., "base_ref": ..., "updated_ref": ...,'
+            ' "min_removal_confidence": 0.85} -> 202, same job shape, result is the '
+            "annotated changed-literals report."
         ),
     }
 
