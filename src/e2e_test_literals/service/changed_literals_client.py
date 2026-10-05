@@ -48,6 +48,13 @@ def _request(method: str, path: str, *, auth_header: str | None = None, **kwargs
         kwargs.setdefault("headers", {})["Authorization"] = auth_header
     with httpx.Client(base_url=config.CHANGED_LITERALS_URL, transport=_transport, timeout=30.0) as http_client:
         resp = http_client.request(method, path, **kwargs)
+        # Must read this before the `with` block closes the connection -- the actual TCP peer
+        # this request connected to, which can differ from a later/separate DNS lookup if
+        # something (egress sidecar, transparent proxy) intercepts the connection post-DNS.
+        try:
+            server_addr = resp.extensions["network_stream"].get_extra_info("server_addr")
+        except Exception as peer_exc:
+            server_addr = f"<unavailable: {peer_exc}>"
     print(f"changed-literals: {method} {resp.request.url} -> {resp.status_code}")
     if resp.is_success:
         return resp
@@ -56,6 +63,7 @@ def _request(method: str, path: str, *, auth_header: str | None = None, **kwargs
         resolved_ip = socket.gethostbyname(host)
     except OSError as dns_exc:
         resolved_ip = f"<dns lookup failed: {dns_exc}>"
+    print(f"changed-literals: actual TCP peer for this request was {server_addr}")
     proxy_env = {k: v for k, v in os.environ.items() if "proxy" in k.lower()}
     safe_headers = {k: ("<redacted>" if k.lower() == "authorization" else v) for k, v in resp.request.headers.items()}
     print(f"changed-literals: resolved {host} -> {resolved_ip}; proxy env vars: {proxy_env}")
