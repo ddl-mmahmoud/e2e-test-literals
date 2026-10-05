@@ -50,12 +50,15 @@ def _run_job(
     base_ref: str,
     updated_ref: str,
     min_removal_confidence: float,
+    auth_header: str | None,
 ) -> None:
     with _jobs_lock:
         _jobs[job_id].status = "running"
 
     try:
-        result = compute_impact(test_repo, test_ref, literals_repo, base_ref, updated_ref, min_removal_confidence)
+        result = compute_impact(
+            test_repo, test_ref, literals_repo, base_ref, updated_ref, min_removal_confidence, auth_header
+        )
     except (GitError, ChangedLiteralsError) as exc:
         error = str(exc)
     except Exception:
@@ -84,11 +87,16 @@ def create_job(
     base_ref: str,
     updated_ref: str,
     min_removal_confidence: float,
+    auth_header: str | None = None,
 ) -> tuple[ImpactJob, threading.Thread]:
     """Register a new pending job and return it together with its (not-yet-started)
     worker thread. The caller should snapshot whatever response it wants to build from
     `job`'s "pending" state *before* calling `thread.start()` (same race as
-    `jobs.create_job`)."""
+    `jobs.create_job`).
+
+    `auth_header` is the original `/changed-literals-impact` caller's own `Authorization`
+    header value (see app.py), forwarded through to every changed-literals call -- see
+    impact.compute_impact's docstring for why that's required."""
     prune_expired_jobs()
 
     job_id = uuid.uuid4().hex
@@ -98,7 +106,7 @@ def create_job(
 
     thread = threading.Thread(
         target=_run_job,
-        args=(job_id, test_repo, test_ref, literals_repo, base_ref, updated_ref, min_removal_confidence),
+        args=(job_id, test_repo, test_ref, literals_repo, base_ref, updated_ref, min_removal_confidence, auth_header),
         daemon=True,
     )
     return job, thread

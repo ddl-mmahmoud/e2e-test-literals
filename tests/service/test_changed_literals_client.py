@@ -84,3 +84,45 @@ def test_unconfigured_url_raises_clearly(monkeypatch):
     monkeypatch.setattr(config, "CHANGED_LITERALS_URL", "")
     with pytest.raises(cl_client.ChangedLiteralsError, match="CHANGED_LITERALS_URL"):
         cl_client.get_job_status("abc")
+
+
+def test_auth_header_is_forwarded_when_given(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"status": "running"})
+
+    monkeypatch.setattr(cl_client, "_transport", httpx.MockTransport(handler))
+
+    cl_client.get_job_status("abc", auth_header="Bearer some-token")
+
+    assert captured["authorization"] == "Bearer some-token"
+
+
+def test_no_authorization_header_sent_when_auth_header_omitted(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"status": "running"})
+
+    monkeypatch.setattr(cl_client, "_transport", httpx.MockTransport(handler))
+
+    cl_client.get_job_status("abc")
+
+    assert captured["authorization"] is None
+
+
+def test_redirect_response_raises_a_clear_gateway_auth_error(monkeypatch):
+    monkeypatch.setattr(
+        cl_client,
+        "_transport",
+        httpx.MockTransport(
+            lambda request: httpx.Response(
+                302, headers={"location": "https://cloud-dogfood.domino.tech/secured?redirectPath=..."}
+            )
+        ),
+    )
+    with pytest.raises(cl_client.ChangedLiteralsError, match="redirected"):
+        cl_client.get_job_status("abc")

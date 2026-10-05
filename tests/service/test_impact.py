@@ -60,12 +60,12 @@ def _finding(**overrides) -> dict:
 
 
 def _stub_changed_literals(monkeypatch, findings: list[dict]) -> None:
-    monkeypatch.setattr(cl_client, "create_job", lambda repo, base, updated: {"job_id": "job-1"})
-    monkeypatch.setattr(cl_client, "get_job_status", lambda job_id: {"status": "done"})
+    monkeypatch.setattr(cl_client, "create_job", lambda repo, base, updated, **k: {"job_id": "job-1"})
+    monkeypatch.setattr(cl_client, "get_job_status", lambda job_id, **k: {"status": "done"})
     monkeypatch.setattr(
         cl_client,
         "get_result_page",
-        lambda job_id, *, offset=0, limit=2000: {
+        lambda job_id, *, offset=0, limit=2000, **k: {
             "offset": offset,
             "limit": limit,
             "total": len(findings),
@@ -148,8 +148,8 @@ def test_match_is_case_sensitive_substring(monkeypatch):
 def test_raises_on_remote_job_error(monkeypatch):
     monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
     _write_test_db("deadbeef")
-    monkeypatch.setattr(cl_client, "create_job", lambda repo, base, updated: {"job_id": "job-1"})
-    monkeypatch.setattr(cl_client, "get_job_status", lambda job_id: {"status": "error", "error": "boom"})
+    monkeypatch.setattr(cl_client, "create_job", lambda repo, base, updated, **k: {"job_id": "job-1"})
+    monkeypatch.setattr(cl_client, "get_job_status", lambda job_id, **k: {"status": "error", "error": "boom"})
 
     with pytest.raises(cl_client.ChangedLiteralsError, match="boom"):
         impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
@@ -159,7 +159,7 @@ def test_fetch_all_findings_follows_pagination(monkeypatch):
     page_one = [_finding(text=f"finding-{i}") for i in range(2)]
     page_two = [_finding(text=f"finding-{i}") for i in range(2, 3)]
 
-    def _get_result_page(job_id, *, offset=0, limit=2000):
+    def _get_result_page(job_id, *, offset=0, limit=2000, **k):
         if offset == 0:
             return {"offset": 0, "limit": 2, "total": 3, "findings": page_one}
         return {"offset": 2, "limit": 2, "total": 3, "findings": page_two}

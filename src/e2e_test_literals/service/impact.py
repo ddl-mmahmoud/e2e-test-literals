@@ -74,19 +74,19 @@ def _match_literals(text: str, test_literals: list[dict]) -> list[dict]:
     return [literal for literal in test_literals if literal["value"] in text]
 
 
-def _poll_changed_literals_job(job_id: str) -> dict:
+def _poll_changed_literals_job(job_id: str, auth_header: str | None) -> dict:
     """Blocks (on this job's own worker thread, see impact_jobs.py) until the remote
     changed-literals job reaches done/error. No separate timeout of our own for now --
     matches this codebase's existing style of not imposing one on long-running
     upstream work (e.g. proxy.py's streaming requests have none either)."""
     while True:
-        status = cl_client.get_job_status(job_id)
+        status = cl_client.get_job_status(job_id, auth_header=auth_header)
         if status["status"] in ("done", "error"):
             return status
         time.sleep(_POLL_INTERVAL_SECONDS)
 
 
-def _fetch_all_findings(job_id: str) -> list[dict]:
+def _fetch_all_findings(job_id: str, auth_header: str | None = None) -> list[dict]:
     """Loop-fetches every page of the remote job's result into memory before
     filtering/matching. changed-literals' own finding counts are per-diff (hundreds,
     not millions) so this is a non-issue today -- if a real-world diff ever makes this
@@ -95,7 +95,7 @@ def _fetch_all_findings(job_id: str) -> list[dict]:
     findings: list[dict] = []
     offset = 0
     while True:
-        page = cl_client.get_result_page(job_id, offset=offset, limit=_RESULT_PAGE_SIZE)
+        page = cl_client.get_result_page(job_id, offset=offset, limit=_RESULT_PAGE_SIZE, auth_header=auth_header)
         page_findings = page["findings"]
         findings.extend(page_findings)
         offset += len(page_findings)
@@ -110,6 +110,7 @@ def compute_impact(
     base_ref: str,
     updated_ref: str,
     min_removal_confidence: float = DEFAULT_MIN_REMOVAL_CONFIDENCE,
+    auth_header: str | None = None,
 ) -> dict:
     """The actual unit of work for a `POST /changed-literals-impact` job (see
     impact_jobs.py). Runs on the job's own worker thread; nothing here is async.
@@ -120,17 +121,23 @@ def compute_impact(
     it. Each returned finding is annotated with `matched_test_literals` (possibly
     empty) rather than only including findings that actually matched, so a caller can
     see exactly which removed-and-confident findings were checked.
+
+    `auth_header` is the original caller's own `Authorization` header value, forwarded
+    unchanged to every changed-literals call: changed-literals itself is unauthenticated,
+    but Domino's app-proxy gateway in front of it isn't, and 302-redirects any call that
+    doesn't carry it to an SSO login page instead of reaching the app (see
+    changed_literals_client.py).
     """
     test_sha = resolve_and_generate(test_repo, test_ref)
     test_literals = _load_test_literals(test_sha)
 
-    created = cl_client.create_job(literals_repo, base_ref, updated_ref)
-    status = _poll_changed_literals_job(created["job_id"])
+    created = cl_client.create_job(literals_repo, base_ref, updated_ref, auth_header=auth_header)
+    status = _poll_changed_literals_job(created["job_id"], auth_header)
     if status["status"] == "error":
         raise cl_client.ChangedLiteralsError(status.get("error") or "changed-literals job failed")
 
     findings = []
-    for finding in _fetch_all_findings(created["job_id"]):
+    for finding in _fetch_all_findings(created["job_id"], auth_header):
         if finding["change"] != "removed" or finding["confidence"] < min_removal_confidence:
             continue
         findings.append({**finding, "matched_test_literals": _match_literals(finding["text"], test_literals)})

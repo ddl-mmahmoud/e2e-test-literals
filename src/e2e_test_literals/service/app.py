@@ -248,7 +248,11 @@ def _impact_job_body(job: impact_jobs.ImpactJob) -> dict:
     return body
 
 
-async def create_impact_job(payload: ImpactRequest) -> JSONResponse:
+async def create_impact_job(payload: ImpactRequest, request: Request) -> JSONResponse:
+    # changed-literals itself is unauthenticated, but Domino's app-proxy gateway in
+    # front of it isn't -- forward whatever Authorization this caller used on us, so
+    # the outbound call to changed-literals doesn't get 302-redirected to an SSO login
+    # page instead of reaching the app (see changed_literals_client.py).
     job, thread = impact_jobs.create_job(
         payload.test_repo,
         payload.test_ref,
@@ -256,6 +260,7 @@ async def create_impact_job(payload: ImpactRequest) -> JSONResponse:
         payload.base_ref,
         payload.updated_ref,
         payload.min_removal_confidence,
+        request.headers.get("authorization"),
     )
     # Snapshot before starting the thread -- same race as create_revision above.
     body = _impact_job_body(job)
