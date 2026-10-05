@@ -13,20 +13,30 @@ from __future__ import annotations
 import sqlite3
 import time
 
+from rapidfuzz import fuzz
+
 from . import changed_literals_client as cl_client
 from .generation import db_path, resolve_and_generate
 
 DEFAULT_MIN_REMOVAL_CONFIDENCE = 0.85
+DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE = 0.9
 
 _POLL_INTERVAL_SECONDS = 1.0
 _RESULT_PAGE_SIZE = 2000  # changed-literals' own MAX_PAGE_SIZE
 
+# Below this length, rapidfuzz's partial_ratio has no room for partial credit -- it
+# degenerates to a binary 0-or-100 result -- so it can't express the graded confidence
+# a match is meant to carry, and a bare 1-2 char/word literal is exactly the case that
+# motivated moving off plain substring matching (spurious hits in unrelated text).
+# Literals shorter than this never match, regardless of confidence.
+_MIN_LITERAL_LENGTH_FOR_MATCHING = 3
+
 
 def _load_test_literals(sha: str) -> list[dict]:
     """Every literal this test revision depends on, loaded into memory once per job --
-    the per-revision sqlite is small (db.py), so matching can be a plain Python
-    substring check (exact, case-sensitive -- see `_match_literals`) rather than one
-    SQL round-trip per candidate finding."""
+    the per-revision sqlite is small (db.py), so matching can be a plain in-process
+    fuzzy comparison (see `_match_literals`) rather than one SQL round-trip per
+    candidate finding."""
     conn = sqlite3.connect(db_path(sha))
     try:
         conn.row_factory = sqlite3.Row
@@ -65,13 +75,28 @@ def _load_test_literals(sha: str) -> list[dict]:
     ]
 
 
-def _match_literals(text: str, test_literals: list[dict]) -> list[dict]:
-    # Exact, case-sensitive substring match. Note `text` is already `.strip()`'d and
-    # truncated to 200 chars by changed-literals itself (its `Finding.text`) -- a test
-    # literal longer than that truncation point could produce a false negative here.
-    # Known, accepted limitation for v1 (see CHANGED-LITERALS-IMPACT-PLAN.md Q4);
-    # revisit only if this causes real misses in practice.
-    return [literal for literal in test_literals if literal["value"] in text]
+def _match_literals(
+    text: str, test_literals: list[dict], min_confidence: float = DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
+) -> list[dict]:
+    """Fuzzy containment check, via rapidfuzz's `partial_ratio`: the best-aligning edit
+    distance between `literal["value"]` and some window of `text`, normalized to 0-1 --
+    not whole-string similarity, so a short literal still has to actually appear inside
+    `text` (near-verbatim) to score highly, rather than merely resemble it overall.
+    Each match is annotated with its `match_confidence` so a caller can see how close it
+    was to the `min_confidence` floor. Note `text` is already `.strip()`'d and truncated
+    to 200 chars by changed-literals itself (its `Finding.text`) -- a test literal
+    longer than that truncation point could produce a false negative here. Known,
+    accepted limitation for v1 (see CHANGED-LITERALS-IMPACT-PLAN.md Q4); revisit only if
+    this causes real misses in practice."""
+    matches = []
+    for literal in test_literals:
+        value = literal["value"]
+        if len(value) < _MIN_LITERAL_LENGTH_FOR_MATCHING:
+            continue
+        confidence = fuzz.partial_ratio(value, text) / 100.0
+        if confidence >= min_confidence:
+            matches.append({**literal, "match_confidence": confidence})
+    return matches
 
 
 def _poll_changed_literals_job(job_id: str, auth_header: str | None) -> dict:
@@ -110,6 +135,7 @@ def compute_impact(
     base_ref: str,
     updated_ref: str,
     min_removal_confidence: float = DEFAULT_MIN_REMOVAL_CONFIDENCE,
+    min_literal_match_confidence: float = DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE,
     auth_header: str | None = None,
 ) -> dict:
     """The actual unit of work for a `POST /changed-literals-impact` job (see
@@ -120,7 +146,9 @@ def compute_impact(
     internal floor of 0.3 (it never returns anything below that), not a replacement for
     it. Each returned finding is annotated with `matched_test_literals` (possibly
     empty) rather than only including findings that actually matched, so a caller can
-    see exactly which removed-and-confident findings were checked.
+    see exactly which removed-and-confident findings were checked. `matched_test_literals`
+    entries are only those at or above `min_literal_match_confidence` (see
+    `_match_literals`).
 
     `auth_header` is the original caller's own `Authorization` header value, forwarded
     unchanged to every changed-literals call: changed-literals itself is unauthenticated,
@@ -142,7 +170,8 @@ def compute_impact(
     for finding in _fetch_all_findings(created["job_id"], auth_header):
         if finding["change"] != "removed" or finding["confidence"] < min_removal_confidence:
             continue
-        findings.append({**finding, "matched_test_literals": _match_literals(finding["text"], test_literals)})
+        matched = _match_literals(finding["text"], test_literals, min_literal_match_confidence)
+        findings.append({**finding, "matched_test_literals": matched})
 
     return {
         "test_repo": test_repo,
@@ -152,6 +181,7 @@ def compute_impact(
         "base_ref": base_ref,
         "updated_ref": updated_ref,
         "min_removal_confidence": min_removal_confidence,
+        "min_literal_match_confidence": min_literal_match_confidence,
         "total": len(findings),
         "findings": findings,
     }

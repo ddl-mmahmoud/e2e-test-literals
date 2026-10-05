@@ -50,6 +50,7 @@ def _run_job(
     base_ref: str,
     updated_ref: str,
     min_removal_confidence: float,
+    min_literal_match_confidence: float,
     auth_header: str | None,
 ) -> None:
     with _jobs_lock:
@@ -57,7 +58,14 @@ def _run_job(
 
     try:
         result = compute_impact(
-            test_repo, test_ref, literals_repo, base_ref, updated_ref, min_removal_confidence, auth_header
+            test_repo,
+            test_ref,
+            literals_repo,
+            base_ref,
+            updated_ref,
+            min_removal_confidence,
+            min_literal_match_confidence,
+            auth_header,
         )
     except (GitError, ChangedLiteralsError) as exc:
         print(f"impact job {job_id} failed ({type(exc).__name__}): {exc}")
@@ -88,6 +96,7 @@ def create_job(
     base_ref: str,
     updated_ref: str,
     min_removal_confidence: float,
+    min_literal_match_confidence: float,
     auth_header: str | None = None,
 ) -> tuple[ImpactJob, threading.Thread]:
     """Register a new pending job and return it together with its (not-yet-started)
@@ -107,7 +116,17 @@ def create_job(
 
     thread = threading.Thread(
         target=_run_job,
-        args=(job_id, test_repo, test_ref, literals_repo, base_ref, updated_ref, min_removal_confidence, auth_header),
+        args=(
+            job_id,
+            test_repo,
+            test_ref,
+            literals_repo,
+            base_ref,
+            updated_ref,
+            min_removal_confidence,
+            min_literal_match_confidence,
+            auth_header,
+        ),
         daemon=True,
     )
     return job, thread

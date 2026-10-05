@@ -1,7 +1,7 @@
 """Unit tests for service/impact.py -- changed-literals and the test revision build are
 both faked out (Q7 of CHANGED-LITERALS-IMPACT-PLAN.md: assume the documented HTTP
 contract and mock it, no real changed-literals instance needed), covering the
-filter/substring-match orchestration logic itself."""
+filter/fuzzy-match orchestration logic itself."""
 
 from __future__ import annotations
 
@@ -83,6 +83,7 @@ def test_matches_removed_literal_above_confidence(monkeypatch):
 
     assert result["test_sha"] == "deadbeef"
     assert result["min_removal_confidence"] == impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
+    assert result["min_literal_match_confidence"] == impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
     assert result["total"] == 1
     finding = result["findings"][0]
     assert finding["change"] == "removed"
@@ -92,6 +93,7 @@ def test_matches_removed_literal_above_confidence(monkeypatch):
     assert match["scenario_name"] == "Save a widget"
     assert match["source_file"] == "tests/ui/features/example.feature"
     assert match["tags"] == ["smoke"]
+    assert match["match_confidence"] == 1.0
 
 
 def test_drops_findings_below_min_confidence(monkeypatch):
@@ -135,14 +137,57 @@ def test_respects_custom_min_removal_confidence(monkeypatch):
     assert result["total"] == 1
 
 
-def test_match_is_case_sensitive_substring(monkeypatch):
+def test_match_tolerates_minor_noise_above_confidence_floor(monkeypatch):
+    # A single-character difference (here, a case change) still scores well above the
+    # default floor -- the fuzzy match is meant to tolerate exactly this kind of minor
+    # drift, unlike the old exact substring check.
     monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
     _write_test_db("deadbeef", value="Saved successfully")
     _stub_changed_literals(monkeypatch, [_finding(text="saved successfully (lowercase, different text)")])
 
     result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
 
+    assert len(result["findings"][0]["matched_test_literals"]) == 1
+
+
+def test_drops_dissimilar_text_even_with_shared_words(monkeypatch):
+    # "Save" is a real substring of this text, but the literal doesn't actually appear
+    # verbatim (or near-verbatim) in it -- a fuzzy match has to mandate inclusion, not
+    # just loose resemblance, so this should score below the default floor.
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", value="Save")
+    _stub_changed_literals(monkeypatch, [_finding(text="Unsaved changes will be lost")])
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
     assert result["findings"][0]["matched_test_literals"] == []
+
+
+def test_short_literal_never_matches(monkeypatch):
+    # Below _MIN_LITERAL_LENGTH_FOR_MATCHING, partial_ratio can only ever return 0 or
+    # 100 -- no graded confidence to filter on -- so these are excluded outright rather
+    # than auto-matching any text that happens to contain them.
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", value="OK")
+    _stub_changed_literals(monkeypatch, [_finding(text="OK, continuing now")])
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
+    assert result["findings"][0]["matched_test_literals"] == []
+
+
+def test_respects_custom_min_literal_match_confidence(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", value="Delete project")
+    _stub_changed_literals(monkeypatch, [_finding(text="Are you sure you want to delete this project?")])
+
+    default_result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+    assert default_result["findings"][0]["matched_test_literals"] == []
+
+    loose_result = impact.compute_impact(
+        "test-repo", "main", "product-repo", "base", "updated", min_literal_match_confidence=0.5
+    )
+    assert len(loose_result["findings"][0]["matched_test_literals"]) == 1
 
 
 def test_raises_on_remote_job_error(monkeypatch):

@@ -20,6 +20,7 @@ _ARGS = dict(
     base_ref="base",
     updated_ref="updated",
     min_removal_confidence=0.85,
+    min_literal_match_confidence=0.9,
 )
 
 
