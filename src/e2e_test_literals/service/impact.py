@@ -87,11 +87,22 @@ def _match_literals(
     to 200 chars by changed-literals itself (its `Finding.text`) -- a test literal
     longer than that truncation point could produce a false negative here. Known,
     accepted limitation for v1 (see CHANGED-LITERALS-IMPACT-PLAN.md Q4); revisit only if
-    this causes real misses in practice."""
+    this causes real misses in practice.
+
+    `partial_ratio` itself is direction-agnostic: given two strings of different
+    lengths, it always searches the *shorter* one inside the longer one, regardless of
+    argument order -- there's no "needle vs haystack" distinction at that layer. Plenty
+    of findings have short `text` (changed-literals often reports a single word/short
+    label), while test literals are frequently full sentences/labels, so without a
+    length guard a literal *longer* than `text` would silently flip the check into "is
+    this short finding text contained somewhere in this long literal" -- the opposite
+    of what we want (and a near-guaranteed spurious match for any common short word).
+    Skip those pairs outright, same as the old exact substring check already did
+    (`value in text` is trivially `False` whenever `value` is longer than `text`)."""
     matches = []
     for literal in test_literals:
         value = literal["value"]
-        if len(value) < _MIN_LITERAL_LENGTH_FOR_MATCHING:
+        if len(value) < _MIN_LITERAL_LENGTH_FOR_MATCHING or len(value) > len(text):
             continue
         confidence = fuzz.partial_ratio(value, text) / 100.0
         if confidence >= min_confidence:

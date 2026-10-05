@@ -137,6 +137,24 @@ def test_respects_custom_min_removal_confidence(monkeypatch):
     assert result["total"] == 1
 
 
+def test_literal_longer_than_finding_text_never_matches(monkeypatch):
+    # rapidfuzz's partial_ratio is direction-agnostic -- given two strings of
+    # different lengths it always searches the *shorter* one inside the longer one,
+    # regardless of argument order. Without a length guard, a literal longer than the
+    # finding's (often short/single-word) `text` would flip the check into "is this
+    # short finding text contained in this long literal" -- the opposite of the
+    # intended "does the finding's text contain this literal" semantics, and a
+    # near-guaranteed spurious match for any literal that happens to share a common
+    # word with the finding.
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", value="Access Forbidden")
+    _stub_changed_literals(monkeypatch, [_finding(text="Access")])
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
+    assert result["findings"][0]["matched_test_literals"] == []
+
+
 def test_match_tolerates_minor_noise_above_confidence_floor(monkeypatch):
     # A single-character difference (here, a case change) still scores well above the
     # default floor -- the fuzzy match is meant to tolerate exactly this kind of minor
