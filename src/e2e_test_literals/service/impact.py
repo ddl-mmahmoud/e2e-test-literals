@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from typing import Literal
 
 from rapidfuzz import fuzz
 
@@ -21,14 +22,27 @@ from .generation import db_path, resolve_and_generate
 DEFAULT_MIN_REMOVAL_CONFIDENCE = 0.85
 DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE = 0.9
 
+# "substring": plain case-insensitive containment, `match_confidence` always 1.0 --
+#   the old exact-containment check, for callers who don't want fuzziness at all.
+# "partial_ratio": rapidfuzz score only, no containment required -- a literal that
+#   merely *resembles* some window of the text (shared words, a stray typo) can match.
+# "substring_and_partial_ratio" (default): containment is a hard gate, `partial_ratio`
+#   only grades the confidence of matches that already passed it (see `_match_literals`
+#   for why pure `partial_ratio` alone is too permissive).
+MatchMethod = Literal["substring", "partial_ratio", "substring_and_partial_ratio"]
+DEFAULT_MATCH_METHOD: MatchMethod = "substring_and_partial_ratio"
+_MATCH_METHODS: tuple[MatchMethod, ...] = ("substring", "partial_ratio", "substring_and_partial_ratio")
+
 _POLL_INTERVAL_SECONDS = 1.0
 _RESULT_PAGE_SIZE = 2000  # changed-literals' own MAX_PAGE_SIZE
 
 # Below this length, rapidfuzz's partial_ratio has no room for partial credit -- it
 # degenerates to a binary 0-or-100 result -- so it can't express the graded confidence
 # a match is meant to carry, and a bare 1-2 char/word literal is exactly the case that
-# motivated moving off plain substring matching (spurious hits in unrelated text).
-# Literals shorter than this never match, regardless of confidence.
+# motivated moving off plain substring matching (spurious hits in unrelated text). Also
+# applied under the "substring" method, for the same reason: a 1-2 char/word literal is
+# a near-guaranteed spurious containment hit in unrelated text, fuzzy or not.
+# Literals shorter than this never match, regardless of confidence or match_method.
 _MIN_LITERAL_LENGTH_FOR_MATCHING = 3
 
 
@@ -76,18 +90,32 @@ def _load_test_literals(sha: str) -> list[dict]:
 
 
 def _match_literals(
-    text: str, test_literals: list[dict], min_confidence: float = DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
+    text: str,
+    test_literals: list[dict],
+    min_confidence: float = DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE,
+    match_method: MatchMethod = DEFAULT_MATCH_METHOD,
 ) -> list[dict]:
-    """Fuzzy containment check, via rapidfuzz's `partial_ratio`: the best-aligning edit
-    distance between `literal["value"]` and some window of `text`, normalized to 0-1 --
-    not whole-string similarity, so a short literal still has to actually appear inside
-    `text` (near-verbatim) to score highly, rather than merely resemble it overall.
-    Each match is annotated with its `match_confidence` so a caller can see how close it
-    was to the `min_confidence` floor. Note `text` is already `.strip()`'d and truncated
-    to 200 chars by changed-literals itself (its `Finding.text`) -- a test literal
-    longer than that truncation point could produce a false negative here. Known,
-    accepted limitation for v1 (see CHANGED-LITERALS-IMPACT-PLAN.md Q4); revisit only if
-    this causes real misses in practice.
+    """Three interchangeable notions of "literal matches text" (see `MatchMethod`):
+
+    - "substring": `literal["value"]` must appear inside `text` (case-insensitively).
+      Binary -- every match gets `match_confidence` 1.0, so `min_confidence` is moot.
+    - "partial_ratio": rapidfuzz's `partial_ratio` alone, the best-aligning edit
+      distance between `value` and some window of `text`, normalized to 0-1. No
+      containment required, so a literal that merely *resembles* some window of `text`
+      (shared words, nearby phrasing, a stray typo) can match without truly occurring
+      in it -- useful for catching paraphrased/rewritten findings, noisier otherwise.
+    - "substring_and_partial_ratio" (the default): containment is a hard gate, and
+      `partial_ratio` only grades the confidence of matches that already passed it
+      (case differences and the like still cost points -- see
+      `test_match_tolerates_minor_noise_above_confidence_floor`). Gives a caller a
+      `match_confidence` that means something rather than one that's trivially 1.0
+      whenever the gate passes, while still ruling out resemblance-only matches.
+
+    Note `text` is already `.strip()`'d and truncated to 200 chars by changed-literals
+    itself (its `Finding.text`) -- a test literal longer than that truncation point
+    could produce a false negative here. Known, accepted limitation for v1 (see
+    CHANGED-LITERALS-IMPACT-PLAN.md Q4); revisit only if this causes real misses in
+    practice.
 
     `partial_ratio` itself is direction-agnostic: given two strings of different
     lengths, it always searches the *shorter* one inside the longer one, regardless of
@@ -97,14 +125,18 @@ def _match_literals(
     length guard a literal *longer* than `text` would silently flip the check into "is
     this short finding text contained somewhere in this long literal" -- the opposite
     of what we want (and a near-guaranteed spurious match for any common short word).
-    Skip those pairs outright, same as the old exact substring check already did
+    Skip those pairs outright, same as a containment check would anyway
     (`value in text` is trivially `False` whenever `value` is longer than `text`)."""
     matches = []
     for literal in test_literals:
         value = literal["value"]
         if len(value) < _MIN_LITERAL_LENGTH_FOR_MATCHING or len(value) > len(text):
             continue
-        confidence = fuzz.partial_ratio(value, text) / 100.0
+
+        if match_method != "partial_ratio" and value.casefold() not in text.casefold():
+            continue
+
+        confidence = 1.0 if match_method == "substring" else fuzz.partial_ratio(value, text) / 100.0
         if confidence >= min_confidence:
             matches.append({**literal, "match_confidence": confidence})
     return matches
@@ -147,6 +179,7 @@ def compute_impact(
     updated_ref: str,
     min_removal_confidence: float = DEFAULT_MIN_REMOVAL_CONFIDENCE,
     min_literal_match_confidence: float = DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE,
+    match_method: MatchMethod = DEFAULT_MATCH_METHOD,
     auth_header: str | None = None,
 ) -> dict:
     """The actual unit of work for a `POST /changed-literals-impact` job (see
@@ -158,8 +191,8 @@ def compute_impact(
     it. Each returned finding is annotated with `matched_test_literals` (possibly
     empty) rather than only including findings that actually matched, so a caller can
     see exactly which removed-and-confident findings were checked. `matched_test_literals`
-    entries are only those at or above `min_literal_match_confidence` (see
-    `_match_literals`).
+    entries are only those at or above `min_literal_match_confidence` under `match_method`
+    (see `_match_literals` and `MatchMethod`).
 
     `auth_header` is the original caller's own `Authorization` header value, forwarded
     unchanged to every changed-literals call: changed-literals itself is unauthenticated,
@@ -167,6 +200,9 @@ def compute_impact(
     doesn't carry it to an SSO login page instead of reaching the app (see
     changed_literals_client.py).
     """
+    if match_method not in _MATCH_METHODS:
+        raise ValueError(f"match_method must be one of {_MATCH_METHODS}, got {match_method!r}")
+
     test_sha = resolve_and_generate(test_repo, test_ref)
     test_literals = _load_test_literals(test_sha)
 
@@ -181,7 +217,7 @@ def compute_impact(
     for finding in _fetch_all_findings(created["job_id"], auth_header):
         if finding["change"] != "removed" or finding["confidence"] < min_removal_confidence:
             continue
-        matched = _match_literals(finding["text"], test_literals, min_literal_match_confidence)
+        matched = _match_literals(finding["text"], test_literals, min_literal_match_confidence, match_method)
         findings.append({**finding, "matched_test_literals": matched})
 
     return {
@@ -193,6 +229,7 @@ def compute_impact(
         "updated_ref": updated_ref,
         "min_removal_confidence": min_removal_confidence,
         "min_literal_match_confidence": min_literal_match_confidence,
+        "match_method": match_method,
         "total": len(findings),
         "findings": findings,
     }

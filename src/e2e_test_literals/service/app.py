@@ -40,14 +40,19 @@ it's done -- mirrors changed-literals' app.py:
   POST /changed-literals-impact
              body: {"test_repo": ..., "test_ref": "main", "literals_repo": ...,
                     "base_ref": ..., "updated_ref": ..., "min_removal_confidence": 0.85,
-                    "min_literal_match_confidence": 0.9}
+                    "min_literal_match_confidence": 0.9,
+                    "match_method": "substring_and_partial_ratio"}
              -> 202 Accepted, same job_id/status_url/result_url shape as /revisions.
                 Builds the test revision if needed, asks changed-literals to diff
                 literals_repo between base_ref/updated_ref, and checks which of its
-                REMOVED findings (at/above min_removal_confidence) fuzzily contain a
-                literal the test revision depends on (at/above
-                min_literal_match_confidence). See impact.py and
-                CHANGED-LITERALS-IMPACT-PLAN.md for the full design.
+                REMOVED findings (at/above min_removal_confidence) contain a literal
+                the test revision depends on (at/above min_literal_match_confidence),
+                per match_method -- "substring" (plain containment), "partial_ratio"
+                (rapidfuzz score alone, no containment required), or
+                "substring_and_partial_ratio" (the default: containment required,
+                partial_ratio only grades its confidence). See impact.py's
+                `_match_literals` and CHANGED-LITERALS-IMPACT-PLAN.md for the full
+                design.
 
   GET /changed-literals-impact/jobs/<job_id>[/result]
              -> same job-status/result shape as /revisions/jobs/<job_id>[/result].
@@ -130,6 +135,7 @@ class ImpactRequest(BaseModel):
     updated_ref: str
     min_removal_confidence: float = impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
     min_literal_match_confidence: float = impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
+    match_method: impact.MatchMethod = impact.DEFAULT_MATCH_METHOD
 
 
 def _job_status_path(job_id: str) -> str:
@@ -264,6 +270,7 @@ async def create_impact_job(payload: ImpactRequest, request: Request) -> JSONRes
         payload.updated_ref,
         payload.min_removal_confidence,
         payload.min_literal_match_confidence,
+        payload.match_method,
         request.headers.get("authorization"),
     )
     # Snapshot before starting the thread -- same race as create_revision above.
@@ -395,7 +402,8 @@ def index() -> dict:
             f"GET {config.PREFIX}revisions lists revisions already built. "
             f"POST {config.PREFIX}changed-literals-impact  body: {{\"test_repo\": ..., "
             '"test_ref": "main", "literals_repo": ..., "base_ref": ..., "updated_ref": ...,'
-            ' "min_removal_confidence": 0.85, "min_literal_match_confidence": 0.9} -> 202, '
+            ' "min_removal_confidence": 0.85, "min_literal_match_confidence": 0.9,'
+            ' "match_method": "substring_and_partial_ratio"} -> 202, '
             "same job shape, result is the annotated changed-literals report."
         ),
     }

@@ -18,7 +18,7 @@ import uuid
 from ..repo_checkout import GitError
 from . import config
 from .changed_literals_client import ChangedLiteralsError
-from .impact import compute_impact
+from .impact import MatchMethod, compute_impact
 
 
 @dataclasses.dataclass
@@ -51,6 +51,7 @@ def _run_job(
     updated_ref: str,
     min_removal_confidence: float,
     min_literal_match_confidence: float,
+    match_method: MatchMethod,
     auth_header: str | None,
 ) -> None:
     with _jobs_lock:
@@ -65,6 +66,7 @@ def _run_job(
             updated_ref,
             min_removal_confidence,
             min_literal_match_confidence,
+            match_method,
             auth_header,
         )
     except (GitError, ChangedLiteralsError) as exc:
@@ -97,6 +99,7 @@ def create_job(
     updated_ref: str,
     min_removal_confidence: float,
     min_literal_match_confidence: float,
+    match_method: MatchMethod,
     auth_header: str | None = None,
 ) -> tuple[ImpactJob, threading.Thread]:
     """Register a new pending job and return it together with its (not-yet-started)
@@ -125,6 +128,7 @@ def create_job(
             updated_ref,
             min_removal_confidence,
             min_literal_match_confidence,
+            match_method,
             auth_header,
         ),
         daemon=True,

@@ -181,6 +181,20 @@ def test_drops_dissimilar_text_even_with_shared_words(monkeypatch):
     assert result["findings"][0]["matched_test_literals"] == []
 
 
+def test_high_confidence_without_true_containment_never_matches(monkeypatch):
+    # A one-character typo inside an otherwise-matching window scores well above the
+    # default confidence floor via partial_ratio alone (92.9%), but the literal never
+    # actually occurs in the text -- containment is a hard gate, not just another signal
+    # confidence can outweigh.
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", value="Delete project")
+    _stub_changed_literals(monkeypatch, [_finding(text="prefix Delete prbject suffix text padding here")])
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
+    assert result["findings"][0]["matched_test_literals"] == []
+
+
 def test_short_literal_never_matches(monkeypatch):
     # Below _MIN_LITERAL_LENGTH_FOR_MATCHING, partial_ratio can only ever return 0 or
     # 100 -- no graded confidence to filter on -- so these are excluded outright rather
@@ -195,9 +209,12 @@ def test_short_literal_never_matches(monkeypatch):
 
 
 def test_respects_custom_min_literal_match_confidence(monkeypatch):
+    # The literal actually occurs in the text (case-insensitively), so it clears the
+    # containment gate either way -- but the case mismatch still costs it confidence
+    # points, so it only clears the default floor once that floor is loosened.
     monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
-    _write_test_db("deadbeef", value="Delete project")
-    _stub_changed_literals(monkeypatch, [_finding(text="Are you sure you want to delete this project?")])
+    _write_test_db("deadbeef", value="Delete Project")
+    _stub_changed_literals(monkeypatch, [_finding(text="Are you sure you want to delete project now?")])
 
     default_result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
     assert default_result["findings"][0]["matched_test_literals"] == []
@@ -206,6 +223,52 @@ def test_respects_custom_min_literal_match_confidence(monkeypatch):
         "test-repo", "main", "product-repo", "base", "updated", min_literal_match_confidence=0.5
     )
     assert len(loose_result["findings"][0]["matched_test_literals"]) == 1
+
+
+def test_match_method_substring_ignores_partial_ratio_confidence(monkeypatch):
+    # Same case-mismatch pair as test_respects_custom_min_literal_match_confidence,
+    # which only clears the *default* confidence floor once it's loosened -- but under
+    # "substring", containment alone is the whole check, so match_confidence is a flat
+    # 1.0 and it matches even at the (otherwise unmet) default floor.
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", value="Delete Project")
+    _stub_changed_literals(monkeypatch, [_finding(text="Are you sure you want to delete project now?")])
+
+    result = impact.compute_impact(
+        "test-repo", "main", "product-repo", "base", "updated", match_method="substring"
+    )
+
+    assert result["match_method"] == "substring"
+    matches = result["findings"][0]["matched_test_literals"]
+    assert len(matches) == 1
+    assert matches[0]["match_confidence"] == 1.0
+
+
+def test_match_method_partial_ratio_matches_without_true_containment(monkeypatch):
+    # Same typo-inside-the-window pair as
+    # test_high_confidence_without_true_containment_never_matches, which the default
+    # method rejects outright since the literal never truly occurs in the text -- but
+    # under plain "partial_ratio", containment isn't required, only the edit-distance
+    # score, so this matches.
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", value="Delete project")
+    _stub_changed_literals(monkeypatch, [_finding(text="prefix Delete prbject suffix text padding here")])
+
+    result = impact.compute_impact(
+        "test-repo", "main", "product-repo", "base", "updated", match_method="partial_ratio"
+    )
+
+    matches = result["findings"][0]["matched_test_literals"]
+    assert len(matches) == 1
+    assert matches[0]["match_confidence"] == pytest.approx(0.9286, abs=1e-3)
+
+
+def test_rejects_unknown_match_method(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef")
+
+    with pytest.raises(ValueError, match="match_method"):
+        impact.compute_impact("test-repo", "main", "product-repo", "base", "updated", match_method="fuzzy-ish")
 
 
 def test_raises_on_remote_job_error(monkeypatch):
