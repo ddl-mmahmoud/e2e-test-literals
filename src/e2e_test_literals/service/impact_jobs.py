@@ -60,6 +60,7 @@ def _run_job(
             test_repo, test_ref, literals_repo, base_ref, updated_ref, min_removal_confidence, auth_header
         )
     except (GitError, ChangedLiteralsError) as exc:
+        print(f"impact job {job_id} failed ({type(exc).__name__}): {exc}")
         error = str(exc)
     except Exception:
         # Anything else is a bug, but this runs on a detached thread with no caller to

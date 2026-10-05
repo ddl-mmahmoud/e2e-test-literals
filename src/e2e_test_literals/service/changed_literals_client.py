@@ -45,6 +45,7 @@ def _request(method: str, path: str, *, auth_header: str | None = None, **kwargs
         kwargs.setdefault("headers", {})["Authorization"] = auth_header
     with httpx.Client(base_url=config.CHANGED_LITERALS_URL, transport=_transport, timeout=30.0) as http_client:
         resp = http_client.request(method, path, **kwargs)
+    print(f"changed-literals: {method} {resp.request.url} -> {resp.status_code}")
     if resp.is_success:
         return resp
     if resp.is_redirect:
@@ -53,6 +54,7 @@ def _request(method: str, path: str, *, auth_header: str | None = None, **kwargs
         # rather than ever reaching the app. A missing/stale `auth_header` is the only
         # known cause; surface that directly instead of dumping the redirect's raw
         # nginx HTML body on the caller.
+        print(f"changed-literals: redirected to {resp.headers.get('location', '<unknown>')!r}")
         raise ChangedLiteralsError(
             f"changed-literals request was redirected ({resp.status_code}) to "
             f"{resp.headers.get('location', '<unknown>')!r} instead of reaching the app -- "
@@ -62,6 +64,7 @@ def _request(method: str, path: str, *, auth_header: str | None = None, **kwargs
         detail = resp.json().get("detail", resp.text)
     except ValueError:
         detail = resp.text
+    print(f"changed-literals: non-2xx body (truncated): {resp.text[:500]!r}")
     raise ChangedLiteralsError(str(detail))
 
 

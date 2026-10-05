@@ -134,7 +134,9 @@ def compute_impact(
     created = cl_client.create_job(literals_repo, base_ref, updated_ref, auth_header=auth_header)
     status = _poll_changed_literals_job(created["job_id"], auth_header)
     if status["status"] == "error":
-        raise cl_client.ChangedLiteralsError(status.get("error") or "changed-literals job failed")
+        error = status.get("error") or "changed-literals job failed"
+        print(f"changed-literals: remote job {created['job_id']} itself reported status=error: {error[:500]!r}")
+        raise cl_client.ChangedLiteralsError(error)
 
     findings = []
     for finding in _fetch_all_findings(created["job_id"], auth_header):
