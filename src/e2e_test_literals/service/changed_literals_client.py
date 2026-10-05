@@ -68,6 +68,7 @@ def _request(method: str, path: str, *, auth_header: str | None = None, **kwargs
     safe_headers = {k: ("<redacted>" if k.lower() == "authorization" else v) for k, v in resp.request.headers.items()}
     print(f"changed-literals: resolved {host} -> {resolved_ip}; proxy env vars: {proxy_env}")
     print(f"changed-literals: outbound request headers: {safe_headers}")
+    print(f"changed-literals: response headers: {dict(resp.headers)}")
     if resp.is_redirect:
         # Domino's app-proxy gateway, not changed-literals itself -- bouncing an
         # unauthenticated (or wrongly-authenticated) request to its SSO login page
