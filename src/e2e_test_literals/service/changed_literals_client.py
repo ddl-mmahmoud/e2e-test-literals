@@ -15,6 +15,9 @@ up here as a non-JSON, non-2xx response. So every call here must carry whatever
 
 from __future__ import annotations
 
+import os
+import socket
+
 import httpx
 
 from . import config
@@ -48,6 +51,15 @@ def _request(method: str, path: str, *, auth_header: str | None = None, **kwargs
     print(f"changed-literals: {method} {resp.request.url} -> {resp.status_code}")
     if resp.is_success:
         return resp
+    host = resp.request.url.host
+    try:
+        resolved_ip = socket.gethostbyname(host)
+    except OSError as dns_exc:
+        resolved_ip = f"<dns lookup failed: {dns_exc}>"
+    proxy_env = {k: v for k, v in os.environ.items() if "proxy" in k.lower()}
+    safe_headers = {k: ("<redacted>" if k.lower() == "authorization" else v) for k, v in resp.request.headers.items()}
+    print(f"changed-literals: resolved {host} -> {resolved_ip}; proxy env vars: {proxy_env}")
+    print(f"changed-literals: outbound request headers: {safe_headers}")
     if resp.is_redirect:
         # Domino's app-proxy gateway, not changed-literals itself -- bouncing an
         # unauthenticated (or wrongly-authenticated) request to its SSO login page
