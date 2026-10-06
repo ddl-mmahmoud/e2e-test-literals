@@ -4,12 +4,12 @@
 # Edit the placeholders below, then run: ./check_impact.sh
 set -euo pipefail
 
-#BASE="https://apps.cloud-dogfood.domino.tech/apps/e2e-test-literals"
-BASE="http://127.0.0.1:8888"
+BASE="https://apps.cloud-dogfood.domino.tech/apps/e2e-test-literals"
+#BASE="http://127.0.0.1:8888"
 
-TEST_REPO="github.com:cerebrotech/internal-e2e-tests-service"
+TEST_REPO="https://github.com/cerebrotech/internal-e2e-tests-service"
 TEST_REF="main"
-LITERALS_REPO="github.com:cerebrotech/domino"
+LITERALS_REPO="https://github.com/cerebrotech/domino"
 BASE_REF="18f72106469b17c5338f076ac588a95dd1ba6374"
 UPDATED_REF="f58ba93730d887fafb610f6f3397d25de36a072a"
 MIN_REMOVAL_CONFIDENCE="0.9"
