@@ -142,19 +142,19 @@ def _match_literals(
     return matches
 
 
-def _poll_changed_literals_job(job_id: str, auth_header: str | None) -> dict:
+def _poll_changed_literals_job(job_id: str) -> dict:
     """Blocks (on this job's own worker thread, see impact_jobs.py) until the remote
     changed-literals job reaches done/error. No separate timeout of our own for now --
     matches this codebase's existing style of not imposing one on long-running
     upstream work (e.g. proxy.py's streaming requests have none either)."""
     while True:
-        status = cl_client.get_job_status(job_id, auth_header=auth_header)
+        status = cl_client.get_job_status(job_id)
         if status["status"] in ("done", "error"):
             return status
         time.sleep(_POLL_INTERVAL_SECONDS)
 
 
-def _fetch_all_findings(job_id: str, auth_header: str | None = None) -> list[dict]:
+def _fetch_all_findings(job_id: str) -> list[dict]:
     """Loop-fetches every page of the remote job's result into memory before
     filtering/matching. changed-literals' own finding counts are per-diff (hundreds,
     not millions) so this is a non-issue today -- if a real-world diff ever makes this
@@ -163,7 +163,7 @@ def _fetch_all_findings(job_id: str, auth_header: str | None = None) -> list[dic
     findings: list[dict] = []
     offset = 0
     while True:
-        page = cl_client.get_result_page(job_id, offset=offset, limit=_RESULT_PAGE_SIZE, auth_header=auth_header)
+        page = cl_client.get_result_page(job_id, offset=offset, limit=_RESULT_PAGE_SIZE)
         page_findings = page["findings"]
         findings.extend(page_findings)
         offset += len(page_findings)
@@ -180,7 +180,6 @@ def compute_impact(
     min_removal_confidence: float = DEFAULT_MIN_REMOVAL_CONFIDENCE,
     min_literal_match_confidence: float = DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE,
     match_method: MatchMethod = DEFAULT_MATCH_METHOD,
-    auth_header: str | None = None,
 ) -> dict:
     """The actual unit of work for a `POST /changed-literals-impact` job (see
     impact_jobs.py). Runs on the job's own worker thread; nothing here is async.
@@ -193,12 +192,6 @@ def compute_impact(
     see exactly which removed-and-confident findings were checked. `matched_test_literals`
     entries are only those at or above `min_literal_match_confidence` under `match_method`
     (see `_match_literals` and `MatchMethod`).
-
-    `auth_header` is the original caller's own `Authorization` header value, forwarded
-    unchanged to every changed-literals call: changed-literals itself is unauthenticated,
-    but Domino's app-proxy gateway in front of it isn't, and 302-redirects any call that
-    doesn't carry it to an SSO login page instead of reaching the app (see
-    changed_literals_client.py).
     """
     if match_method not in _MATCH_METHODS:
         raise ValueError(f"match_method must be one of {_MATCH_METHODS}, got {match_method!r}")
@@ -206,15 +199,15 @@ def compute_impact(
     test_sha = resolve_and_generate(test_repo, test_ref)
     test_literals = _load_test_literals(test_sha)
 
-    created = cl_client.create_job(literals_repo, base_ref, updated_ref, auth_header=auth_header)
-    status = _poll_changed_literals_job(created["job_id"], auth_header)
+    created = cl_client.create_job(literals_repo, base_ref, updated_ref)
+    status = _poll_changed_literals_job(created["job_id"])
     if status["status"] == "error":
         error = status.get("error") or "changed-literals job failed"
         print(f"changed-literals: remote job {created['job_id']} itself reported status=error: {error[:500]!r}")
         raise cl_client.ChangedLiteralsError(error)
 
     findings = []
-    for finding in _fetch_all_findings(created["job_id"], auth_header):
+    for finding in _fetch_all_findings(created["job_id"]):
         if finding["change"] != "removed" or finding["confidence"] < min_removal_confidence:
             continue
         matched = _match_literals(finding["text"], test_literals, min_literal_match_confidence, match_method)

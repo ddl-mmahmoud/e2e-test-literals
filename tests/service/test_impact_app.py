@@ -82,25 +82,9 @@ def test_default_min_removal_confidence_is_applied(impact_client: TestClient, mo
     _await_job(impact_client, create_resp.json()["job_id"])
 
     (args,) = captured_args
-    assert args[-4] == impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
-    assert args[-3] == impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
-    assert args[-2] == impact.DEFAULT_MATCH_METHOD
-    assert args[-1] is None
-
-
-def test_callers_authorization_header_is_forwarded_to_compute_impact(impact_client: TestClient, monkeypatch):
-    captured_args = []
-    monkeypatch.setattr(
-        impact_jobs, "compute_impact", lambda *a, **k: captured_args.append(a) or {"total": 0, "findings": []}
-    )
-
-    create_resp = impact_client.post(
-        "/changed-literals-impact", json=_REQUEST_BODY, headers={"Authorization": "Bearer caller-token"}
-    )
-    _await_job(impact_client, create_resp.json()["job_id"])
-
-    (args,) = captured_args
-    assert args[-1] == "Bearer caller-token"
+    assert args[-3] == impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
+    assert args[-2] == impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
+    assert args[-1] == impact.DEFAULT_MATCH_METHOD
 
 
 def test_result_409_while_pending(impact_client: TestClient, monkeypatch):

@@ -1,6 +1,6 @@
 """Unit tests for changed_literals_client.py's request/response plumbing, against
 `httpx.MockTransport` (ships with httpx -- no new test dependency, no real
-changed-literals instance needed; see CHANGED-LITERALS-IMPACT-PLAN.md Q7)."""
+changed-literals process needed; see CHANGED-LITERALS-IMPACT-PLAN.md Q7)."""
 
 from __future__ import annotations
 
@@ -10,12 +10,10 @@ import httpx
 import pytest
 
 from e2e_test_literals.service import changed_literals_client as cl_client
-from e2e_test_literals.service import config
 
 
 @pytest.fixture(autouse=True)
-def _configured_url(monkeypatch):
-    monkeypatch.setattr(config, "CHANGED_LITERALS_URL", "http://changed-literals.example")
+def _reset_transport(monkeypatch):
     monkeypatch.setattr(cl_client, "_transport", None)
     yield
 
@@ -34,7 +32,7 @@ def test_create_job_posts_the_documented_body(monkeypatch):
     result = cl_client.create_job("repo-url", "base-ref", "updated-ref")
 
     assert captured["method"] == "POST"
-    assert captured["path"] == "/jobs"
+    assert captured["path"] == "/changed-literals/jobs"
     assert json.loads(captured["body"]) == {"repo": "repo-url", "base": "base-ref", "updated": "updated-ref"}
     assert result == {"job_id": "abc", "status": "pending"}
 
@@ -50,6 +48,7 @@ def test_get_result_page_passes_offset_and_limit(monkeypatch):
     captured = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
         captured["params"] = dict(request.url.params)
         return httpx.Response(200, json={"offset": 400, "limit": 200, "total": 1, "findings": []})
 
@@ -57,6 +56,7 @@ def test_get_result_page_passes_offset_and_limit(monkeypatch):
 
     cl_client.get_result_page("abc", offset=400, limit=200)
 
+    assert captured["path"] == "/changed-literals/jobs/abc/result"
     assert captured["params"] == {"offset": "400", "limit": "200"}
 
 
@@ -77,52 +77,4 @@ def test_non_json_error_body_falls_back_to_raw_text(monkeypatch):
         httpx.MockTransport(lambda request: httpx.Response(500, text="boom")),
     )
     with pytest.raises(cl_client.ChangedLiteralsError, match="boom"):
-        cl_client.get_job_status("abc")
-
-
-def test_unconfigured_url_raises_clearly(monkeypatch):
-    monkeypatch.setattr(config, "CHANGED_LITERALS_URL", "")
-    with pytest.raises(cl_client.ChangedLiteralsError, match="CHANGED_LITERALS_URL"):
-        cl_client.get_job_status("abc")
-
-
-def test_auth_header_is_forwarded_when_given(monkeypatch):
-    captured = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["authorization"] = request.headers.get("authorization")
-        return httpx.Response(200, json={"status": "running"})
-
-    monkeypatch.setattr(cl_client, "_transport", httpx.MockTransport(handler))
-
-    cl_client.get_job_status("abc", auth_header="Bearer some-token")
-
-    assert captured["authorization"] == "Bearer some-token"
-
-
-def test_no_authorization_header_sent_when_auth_header_omitted(monkeypatch):
-    captured = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["authorization"] = request.headers.get("authorization")
-        return httpx.Response(200, json={"status": "running"})
-
-    monkeypatch.setattr(cl_client, "_transport", httpx.MockTransport(handler))
-
-    cl_client.get_job_status("abc")
-
-    assert captured["authorization"] is None
-
-
-def test_redirect_response_raises_a_clear_gateway_auth_error(monkeypatch):
-    monkeypatch.setattr(
-        cl_client,
-        "_transport",
-        httpx.MockTransport(
-            lambda request: httpx.Response(
-                302, headers={"location": "https://cloud-dogfood.domino.tech/secured?redirectPath=..."}
-            )
-        ),
-    )
-    with pytest.raises(cl_client.ChangedLiteralsError, match="redirected"):
         cl_client.get_job_status("abc")

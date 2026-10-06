@@ -2,8 +2,10 @@
 
 Maps `internal-e2e-tests-service`'s `@testrail(####)`-tagged cucu scenarios to the UI
 string-literal / table-column values their execution depends on, and lets you look up
-which cases a batch of *changed* product literals (e.g. from
-[`changed-literals`](../changed-literals)) would affect.
+which cases a batch of *changed* product literals (e.g. from `changed-literals`, now
+consolidated into `src/changed_literals/` in this same repo -- see
+[its own module docstring](src/changed_literals/app.py) and "Joined services" below)
+would affect.
 
 Extracted from `internal-e2e-tests-service`'s `tests/helpers/cucu_literal_deps/` so it
 can index a checkout without living inside it -- see `src/e2e_test_literals/repo_checkout.py`
@@ -31,8 +33,8 @@ of templatized custom steps' `run_steps` bodies (Pass B) and emits Pass-A-only l
 in the current directory; override with `--out`.
 
 Private-repo auth: set `GITHUB_LITERALS_PAT` to a GitHub PAT (same env var
-[`changed-literals`](../changed-literals) uses) -- it's passed as an `http.extraheader`
-override, never written to `.git/config`.
+`changed-literals` uses) -- it's passed as an `http.extraheader` override, never
+written to `.git/config`.
 
 ## Looking up affected cases
 
@@ -60,3 +62,25 @@ One test (`test_resolve_templated_literals_real_repo_add_launcher_to_source_proj
 Pass B against a real `internal-e2e-tests-service` checkout rather than a fabricated
 fixture, since it's asserting behavior against a specific real templatized step. It's
 skipped unless `E2E_TEST_LITERALS_REPO_ROOT` is set to a local checkout path.
+
+## Joined services
+
+This one Domino App/repo runs three processes (see `app.sh`), each distinguished by its
+own URL namespace prefix:
+
+- `e2e_test_literals.service_ui` -- the only one bound to a real TCP port (the one
+  Domino's ingress exposes). Serves the revision-builder UI and reverse-proxies
+  everything else through to the API below.
+- `e2e_test_literals.service` -- the API (`/revisions`, `/changed-literals-impact`,
+  `/data/...`), bound to its own Unix domain socket, reached only by `service_ui`.
+- `changed_literals` -- a separate language-agnostic diff/extraction tool (its own
+  `cli.py` for standalone use, plus `app.py`'s small HTTP job-management service, routes
+  under the fixed `/changed-literals` prefix), bound to a second Unix domain socket,
+  reached only by `e2e_test_literals.service.changed_literals_client`.
+
+Nothing here talks over the real network to a sibling process anymore -- `changed-literals`
+used to be its own, separately-deployed Domino App reached over a real `httpx` client with
+Domino app-proxy auth forwarding (see `CHANGED-LITERALS-IMPACT-PLAN.md`); it's now just
+another process in this same app, reached over a plain UDS HTTP hop like every other
+inter-process call here. See `CHANGED-LITERALS-DESIGN.md` for `changed_literals`'s own
+pipeline/language-adapter design.

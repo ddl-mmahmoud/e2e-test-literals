@@ -46,6 +46,8 @@ dependencies = [
     "selenium>=4.38.0",
     "tenacity>=9.0.0",
     "testrail-api>=1.13.2",
+    "tree-sitter>=0.26.0",
+    "tree-sitter-language-pack>=1.20.0",
     "urllib3>=2.1.0,<3",
     "uvicorn>=0.53.0",
 ]
@@ -55,6 +57,8 @@ e2e-test-literals = "e2e_test_literals:cli"
 e2e-test-literals-lookup = "e2e_test_literals.lookup:cli"
 e2e-test-literals-service = "e2e_test_literals.service.app:main"
 e2e-test-literals-service-ui = "e2e_test_literals.service_ui.app:main"
+changed-literals = "changed_literals.cli:main"
+changed-literals-service = "changed_literals.app:main"
 
 [build-system]
 requires = ["uv_build>=0.9.6,<0.10.0"]

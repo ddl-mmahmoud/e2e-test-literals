@@ -93,11 +93,15 @@ if not EXTERNAL_PREFIX.endswith("/"):
 
 EXTERNAL_DATA_PREFIX = EXTERNAL_PREFIX + DATA_SEGMENT
 
-# Base URL of the sibling `changed-literals` Domino App (see
-# CHANGED-LITERALS-IMPACT-PLAN.md) -- a genuinely separate service reached over the
-# real network, unlike every other inter-process call in this codebase (all of which
-# stay within one Domino app over a Unix domain socket). No default: unlike this
-# module's other variables, there's no sensible value to fall back to for a real
-# external dependency; changed_literals_client.py raises a clear error if a caller
-# reaches it while this is unset.
-CHANGED_LITERALS_URL = os.environ.get("E2E_TEST_LITERALS_SERVICE_CHANGED_LITERALS_URL", "")
+# Unix domain socket of the sibling `changed_literals` process (see
+# CHANGED-LITERALS-IMPACT-PLAN.md and changed_literals/app.py) -- another process
+# within this same repo/Domino app, reached over a UDS like every other inter-process
+# call here (service_ui/client.py, pool.py, proxy.py), not a separate Domino App over
+# the real network anymore. Must match whatever path that process was actually
+# started with (see repo-root app.sh, which sets both from one value).
+CHANGED_LITERALS_SOCKET_PATH = Path(
+    os.environ.get(
+        "E2E_TEST_LITERALS_SERVICE_CHANGED_LITERALS_SOCKET_PATH",
+        str(SOCKET_DIR / "changed-literals.sock"),
+    )
+)
