@@ -17,3 +17,6 @@ e2e-test-literals-service-data/
 
 # Scratch dir
 scratch
+
+# vim
+*.sw[lmnop]
