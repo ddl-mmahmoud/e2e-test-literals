@@ -13,7 +13,13 @@ from e2e_test_literals.service import config, impact
 
 
 def _write_test_db(
-    sha: str, *, case_id: int = 1, value: str = "Saved successfully", tags=("smoke",), routing=None
+    sha: str,
+    *,
+    case_id: int = 1,
+    value: str = "Saved successfully",
+    string_kind: str = "text",
+    tags=("smoke",),
+    routing=None,
 ) -> None:
     cases = {
         case_id: {
@@ -27,7 +33,8 @@ def _write_test_db(
             "literals": [
                 {
                     "value": value,
-                    "kind": "step_arg",
+                    "situation": "argument",
+                    "string_kind": string_kind,
                     "dynamic": False,
                     "source_kind": "direct",
                     "source_file": "tests/ui/features/example.feature",
@@ -107,7 +114,7 @@ def test_matches_removed_literal_above_confidence(monkeypatch):
     assert match["scenario_name"] == "Save a widget"
     assert match["source_file"] == "tests/ui/features/example.feature"
     assert match["tags"] == ["smoke"]
-    assert match["match_confidence"] == 1.0
+    assert match["match_confidence"] == 0.8  # clean containment: substring matches are scaled by 0.8
 
 
 def test_drops_findings_below_min_confidence(monkeypatch):
@@ -182,17 +189,14 @@ def test_match_tolerates_minor_noise_above_confidence_floor(monkeypatch):
     assert len(result["findings"][0]["matched_test_literals"]) == 1
 
 
-def test_drops_dissimilar_text_even_with_shared_words(monkeypatch):
-    # "Save" is a real substring of this text, but the literal doesn't actually appear
-    # verbatim (or near-verbatim) in it -- a fuzzy match has to mandate inclusion, not
-    # just loose resemblance, so this should score below the default floor.
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
-    _write_test_db("deadbeef", value="Save")
-    _stub_changed_literals(monkeypatch, [_finding(text="Unsaved changes will be lost")])
-
-    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
-
-    assert result["findings"][0]["matched_test_literals"] == []
+def test_loose_containment_inside_a_longer_word_falls_below_the_default_floor(monkeypatch):
+    # "Save" is contained (case-insensitively) in "Unsaved", but only loosely: the case
+    # mismatch costs it points (partial_ratio 75%, then scaled by 0.8 for being a substring
+    # match), so it needs a loosened floor to be reported.
+    text = "Unsaved changes will be lost"
+    assert _matches(monkeypatch, value="Save", string_kind="text", text=text) == []
+    (match,) = _matches(monkeypatch, value="Save", string_kind="text", text=text, min_literal_match_confidence=0.6)
+    assert match["match_confidence"] == pytest.approx(0.6)
 
 
 def test_high_confidence_without_true_containment_never_matches(monkeypatch):
@@ -225,7 +229,8 @@ def test_short_literal_never_matches(monkeypatch):
 def test_respects_custom_min_literal_match_confidence(monkeypatch):
     # The literal actually occurs in the text (case-insensitively), so it clears the
     # containment gate either way -- but the case mismatch still costs it confidence
-    # points, so it only clears the default floor once that floor is loosened.
+    # points (86%, scaled by 0.8 to 0.69), so it only clears the default 0.7 floor once
+    # that floor is loosened.
     monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
     _write_test_db("deadbeef", value="Delete Project")
     _stub_changed_literals(monkeypatch, [_finding(text="Are you sure you want to delete project now?")])
@@ -239,50 +244,109 @@ def test_respects_custom_min_literal_match_confidence(monkeypatch):
     assert len(loose_result["findings"][0]["matched_test_literals"]) == 1
 
 
-def test_match_method_substring_ignores_partial_ratio_confidence(monkeypatch):
-    # Same case-mismatch pair as test_respects_custom_min_literal_match_confidence,
-    # which only clears the *default* confidence floor once it's loosened -- but under
-    # "substring", containment alone is the whole check, so match_confidence is a flat
-    # 1.0 and it matches even at the (otherwise unmet) default floor.
+def _matches(monkeypatch, *, value: str, string_kind: str, text: str, **compute_kwargs) -> list[dict]:
     monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
-    _write_test_db("deadbeef", value="Delete Project")
-    _stub_changed_literals(monkeypatch, [_finding(text="Are you sure you want to delete project now?")])
+    _write_test_db("deadbeef", value=value, string_kind=string_kind)
+    _stub_changed_literals(monkeypatch, [_finding(text=text)])
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated", **compute_kwargs)
+    return result["findings"][0]["matched_test_literals"]
 
-    result = impact.compute_impact(
-        "test-repo", "main", "product-repo", "base", "updated", match_method="substring"
+
+def test_button_label_does_not_match_as_a_substring_of_a_larger_string(monkeypatch):
+    # The headline case: a `Save` button shouldn't be pulled in by every removed string
+    # that merely contains "save", whereas the same literal as freeform text still is.
+    removed = "Save your work before continuing"
+    assert _matches(monkeypatch, value="Save", string_kind="button", text=removed) == []
+    assert len(_matches(monkeypatch, value="Save", string_kind="text", text=removed)) == 1
+
+
+def test_button_label_matches_the_whole_removed_string(monkeypatch):
+    (match,) = _matches(monkeypatch, value="Save", string_kind="button", text="Save")
+
+    assert match["match_confidence"] == 1.0
+    assert match["string_kind"] == "button"
+    assert match["match_algorithm"] == "exact"
+
+
+def test_exact_match_differing_only_by_case_is_reported_at_reduced_confidence(monkeypatch):
+    (match,) = _matches(monkeypatch, value="Delete Project", string_kind="button", text="delete project")
+
+    assert (match["match_algorithm"], match["match_confidence"]) == ("exact", 0.7)
+    # ... so a stricter floor than the 0.7 default drops it, and it is still not a substring match.
+    assert (
+        _matches(
+            monkeypatch,
+            value="Delete Project",
+            string_kind="button",
+            text="delete project",
+            min_literal_match_confidence=0.71,
+        )
+        == []
+    )
+    assert _matches(monkeypatch, value="Delete", string_kind="button", text="delete project") == []
+
+
+def test_exact_match_normalizes_whitespace(monkeypatch):
+    assert len(_matches(monkeypatch, value="Delete  Project", string_kind="button", text=" Delete\nProject ")) == 1
+
+
+def test_three_character_floor_applies_to_exact_kinds_too(monkeypatch):
+    assert _matches(monkeypatch, value="OK", string_kind="button", text="OK", min_literal_match_confidence=0.0) == []
+
+
+def test_freeform_match_records_its_algorithm(monkeypatch):
+    (match,) = _matches(monkeypatch, value="Saved", string_kind="text", text="Saved successfully")
+
+    assert match["string_kind"] == "text"
+    assert match["match_algorithm"] == "substring_and_partial_ratio"
+
+
+def test_unclassified_kind_falls_back_to_the_lax_algorithm(monkeypatch):
+    assert len(_matches(monkeypatch, value="Saved", string_kind="unknown", text="Saved successfully")) == 1
+    assert len(_matches(monkeypatch, value="Saved", string_kind="not-a-kind-yet", text="Saved successfully")) == 1
+
+
+def test_data_literal_matches_exactly_at_low_confidence_so_only_when_the_floor_is_lowered(monkeypatch):
+    assert _matches(monkeypatch, value="Project Alpha", string_kind="data", text="Project Alpha") == []
+
+    (match,) = _matches(
+        monkeypatch,
+        value="Project Alpha",
+        string_kind="data",
+        text="Project Alpha",
+        min_literal_match_confidence=0.3,
+    )
+    assert match["match_confidence"] == 0.3
+    # ... and still only on equality, not containment.
+    assert (
+        _matches(
+            monkeypatch,
+            value="Project Alpha",
+            string_kind="data",
+            text="Create Project Alpha now",
+            min_literal_match_confidence=0.3,
+        )
+        == []
     )
 
-    assert result["match_method"] == "substring"
-    matches = result["findings"][0]["matched_test_literals"]
-    assert len(matches) == 1
-    assert matches[0]["match_confidence"] == 1.0
 
-
-def test_match_method_partial_ratio_matches_without_true_containment(monkeypatch):
-    # Same typo-inside-the-window pair as
-    # test_high_confidence_without_true_containment_never_matches, which the default
-    # method rejects outright since the literal never truly occurs in the text -- but
-    # under plain "partial_ratio", containment isn't required, only the edit-distance
-    # score, so this matches.
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
-    _write_test_db("deadbeef", value="Delete project")
-    _stub_changed_literals(monkeypatch, [_finding(text="prefix Delete prbject suffix text padding here")])
-
-    result = impact.compute_impact(
-        "test-repo", "main", "product-repo", "base", "updated", match_method="partial_ratio"
+def test_opaque_literal_never_matches(monkeypatch):
+    assert (
+        _matches(
+            monkeypatch, value="hunter2hunter2", string_kind="opaque", text="hunter2hunter2", min_literal_match_confidence=0.0
+        )
+        == []
     )
 
-    matches = result["findings"][0]["matched_test_literals"]
-    assert len(matches) == 1
-    assert matches[0]["match_confidence"] == pytest.approx(0.9286, abs=1e-3)
 
-
-def test_rejects_unknown_match_method(monkeypatch):
+def test_result_no_longer_echoes_a_match_method(monkeypatch):
     monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
     _write_test_db("deadbeef")
+    _stub_changed_literals(monkeypatch, [_finding()])
 
-    with pytest.raises(ValueError, match="match_method"):
-        impact.compute_impact("test-repo", "main", "product-repo", "base", "updated", match_method="fuzzy-ish")
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
+    assert "match_method" not in result
 
 
 def test_raises_on_remote_job_error(monkeypatch):
@@ -343,8 +407,8 @@ def test_no_invocations_when_nothing_matched(monkeypatch):
 
 def test_min_invocation_confidence_uses_the_weaker_of_removal_and_match_confidence(monkeypatch):
     monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
-    _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])
-    # Exact containment (match_confidence 1.0) in a removal changed-literals is only 0.9 sure of.
+    _write_test_db("deadbeef", case_id=1234, string_kind="button", routing=[_cucu_entry(1234)])
+    # An exact match (match_confidence 1.0) in a removal changed-literals is only 0.9 sure of.
     _stub_changed_literals(monkeypatch, [_finding(confidence=0.9)])
 
     default = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")

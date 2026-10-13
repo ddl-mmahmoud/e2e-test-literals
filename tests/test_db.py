@@ -24,7 +24,8 @@ def test_write_sqlite_populates_all_four_tables(tmp_path: Path) -> None:
             "literals": [
                 {
                     "value": "Save",
-                    "kind": "argument",
+                    "situation": "argument",
+                    "string_kind": "button",
                     "dynamic": False,
                     "source_kind": "direct",
                     "source_file": "some.feature",
@@ -46,7 +47,7 @@ def test_write_sqlite_populates_all_four_tables(tmp_path: Path) -> None:
     ).fetchone()
     tag_rows = conn.execute("SELECT case_id, tag FROM tags ORDER BY tag").fetchall()
     literal_row = conn.execute(
-        "SELECT literals.case_id, literals.value, literals.kind, literals.dynamic, literals.source_kind, "
+        "SELECT literals.case_id, literals.value, literals.situation, literals.string_kind, literals.dynamic, literals.source_kind, "
         "source_files.path, literals.source_line, literals.step_text "
         "FROM literals JOIN source_files ON source_files.id = literals.source_file"
     ).fetchone()
@@ -58,7 +59,7 @@ def test_write_sqlite_populates_all_four_tables(tmp_path: Path) -> None:
     check.equal(tag_rows, [(101602, "smoke"), (101602, "workspace")])
     check.equal(
         literal_row,
-        (101602, "Save", "argument", 0, "direct", "some.feature", 5, 'I click the button "Save"'),
+        (101602, "Save", "argument", "button", 0, "direct", "some.feature", 5, 'I click the button "Save"'),
     )
     check.equal(pattern_row, (101602, 'I click the button "{name}"'))
     check.equal(

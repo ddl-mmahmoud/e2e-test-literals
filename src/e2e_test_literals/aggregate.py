@@ -19,7 +19,8 @@ def _dedupe_literals(literals: list[dict]) -> list[dict]:
             continue
         key = (
             literal["value"],
-            literal["kind"],
+            literal["situation"],
+            literal["string_kind"],
             literal["dynamic"],
             literal["source_kind"],
             literal["source_file"],

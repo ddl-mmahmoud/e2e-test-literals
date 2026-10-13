@@ -4,7 +4,8 @@ Walks `tests/ui/features/**/*.feature` in an `internal-e2e-tests-service` checko
 for every Scenario tagged @testrail(####), emits a sqlite database listing every
 string-valued captured step argument and every DataTable header cell that scenario's
 execution depends on (its own steps + its file's Background). Every such value is
-treated as a literal dependency -- there is no literal-vs-data classification table.
+treated as a literal dependency, tagged with a `string_kind` (button label, freeform text,
+test data, ...; see step_kinds.py) that later decides how it is matched.
 
 Two independently-toggleable passes feed the same database:
 

@@ -29,14 +29,14 @@ def test_literals_from_arguments_keeps_only_named_string_values() -> None:
     ]
 
     literals = literals_from_arguments(
-        arguments, Source(kind="direct", file="some.feature", line=10), step_text, static_vars={}
+        arguments, 'I click the button "{name}"', Source(kind="direct", file="some.feature", line=10), step_text, static_vars={}
     )
 
     values = {literal["value"] for literal in literals}
     check.equal(len(literals), 2, msg="the int-valued `nth` and unnamed arguments must be excluded")
     check.is_in("Save", values)
     check.is_in("{BASEURL}", values)
-    check.is_true(all(literal["kind"] == "argument" for literal in literals))
+    check.is_true(all(literal["situation"] == "argument" for literal in literals))
     check.is_true(all(literal["step_text"] == step_text for literal in literals))
     check.is_true(any(literal["dynamic"] for literal in literals if literal["value"] == "{BASEURL}"))
 
@@ -58,7 +58,8 @@ def test_literals_from_table_uses_headers_only_never_data_rows() -> None:
     check.equal(len(literals), 2, msg="only the two header cells, never the four row cells")
     values = {literal["value"] for literal in literals}
     check.equal(values, {"Name", "Tiny k8s"})
-    check.is_true(all(literal["kind"] == "table_column" for literal in literals))
+    check.is_true(all(literal["situation"] == "table_column" for literal in literals))
+    check.is_true(all(literal["string_kind"] == "table_header" for literal in literals))
     check.is_true(all(literal["step_text"] == step_text for literal in literals))
 
 
@@ -77,7 +78,10 @@ def test_literals_for_step_real_registry_matches_builtin_cucu_steps(bootstrapped
     check.is_none(unmatched)
     check.is_true(
         any(
-            literal["value"] == "Save" and literal["kind"] == "argument" and literal["step_text"] == click_step.name
+            literal["value"] == "Save"
+            and literal["situation"] == "argument"
+            and literal["string_kind"] == "button"
+            and literal["step_text"] == click_step.name
             for literal in literals
         )
     )
@@ -85,7 +89,7 @@ def test_literals_for_step_real_registry_matches_builtin_cucu_steps(bootstrapped
     see_step = Step("<test>", 2, "Then", "then", 'I should see the text "Welcome!"')
     literals, unmatched = literals_for_step(see_step, "tests.feature", "some scenario", static_vars={})
     check.is_none(unmatched)
-    check.is_true(any(literal["value"] == "Welcome!" for literal in literals))
+    check.is_true(any(literal["value"] == "Welcome!" and literal["string_kind"] == "text" for literal in literals))
 
 
 def test_literals_for_step_drops_unnamed_captures_from_comment_header_steps(bootstrapped_registry: Path) -> None:

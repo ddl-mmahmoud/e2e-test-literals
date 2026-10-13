@@ -8,12 +8,17 @@ and line numbers that depend on each one.
 
 The provided values are the literal strings that are *changing* in the
 product; the recorded `literals.value` entries are what the tests actually
-check, which is often just a smaller part of that changing string. By
-default a match therefore means the recorded literal is a substring of the
-provided value (not the other way around). Pass `--reverse` to flip that:
-match when the provided value is a substring of the recorded literal. Pass
-`--exact` to skip substring matching entirely and only match values that are
-equal (`--exact` and `--reverse` are mutually exclusive, since exact matching
+check, which is often just a smaller part of that changing string. How a
+recorded literal is compared depends on what kind of string it is (its
+`string_kind`, see step_kinds.py): a button/link/tab/... label must equal the
+provided value, freeform text only has to occur in it, test-data names match
+exactly at a low confidence, and opaque values (usernames, ids, ...) never
+match. This is the same per-kind matching, 3-character floor and confidence
+scoring the impact service uses (see matching.py); `--min-confidence` is its
+`min_literal_match_confidence`. Pass `--reverse` to flip the containment
+direction for the substring-matched kinds: match when the provided value is a
+substring of the recorded literal. Pass `--exact` to treat every kind as
+exact (`--exact` and `--reverse` are mutually exclusive, since exact matching
 has no direction).
 
 Default output is human-readable text; `--format tsv/csv/json/ndjson` is for
@@ -40,8 +45,21 @@ from pathlib import Path
 
 import click
 
+from .matching import DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE, match_confidence
+
 DEFAULT_DB = "cucu_literal_deps.sqlite"
-FIELDS = ["literal", "case_id", "scenario", "kind", "source_kind", "dynamic", "file", "lines"]
+FIELDS = [
+    "literal",
+    "case_id",
+    "scenario",
+    "situation",
+    "string_kind",
+    "source_kind",
+    "dynamic",
+    "match_confidence",
+    "file",
+    "lines",
+]
 
 
 def parse_literals(raw: str) -> list[str]:
@@ -65,23 +83,29 @@ def _candidates(value: str) -> list[str]:
     return [value]
 
 
-def query_matches(db_path: Path, literals: list[str], *, reverse: bool = False, exact: bool = False) -> list[dict]:
+def query_matches(
+    db_path: Path,
+    literals: list[str],
+    *,
+    reverse: bool = False,
+    exact: bool = False,
+    min_confidence: float = DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE,
+) -> list[dict]:
     """Join `literals` -> `cases` -> `source_files` for every value in `literals` (and
     each value's quote-stripped candidate, see `_candidates`), one row per (literal,
     case, occurrence).
 
     Each returned row carries a `patterns` list: the original `literals` entry (or
     entries -- a quoted and its stripped form can both trace back to different
-    originally-provided values) whose candidate produced that row's match.
+    originally-provided values) whose candidate produced that row's match, plus the
+    `match_algorithm` and `match_confidence` it matched with.
 
-    By default a recorded `literals.value` matches a provided value when it is a
-    *substring* of it (the provided values are the changing product literals; the
-    recorded ones are typically just the part a test actually checks). Pass
-    `reverse=True` to match when the provided value is a substring of the recorded
-    literal instead. `instr()` is used rather than `LIKE` so `%`/`_` in either string
-    are treated literally, not as SQL wildcards. Pass `exact=True` to skip substring
-    matching entirely and only match values that are equal to a recorded literal;
-    `reverse` is ignored in that case since equality has no direction."""
+    A recorded literal matches a provided value per its `string_kind` (see
+    `matching.match_confidence`) at or above `min_confidence`. By default it must occur
+    *in* the provided value (the provided values are the changing product literals; the
+    recorded ones are typically just the part a test actually checks); `reverse=True`
+    flips that for substring-matched kinds, and `exact=True` makes every kind exact
+    (`reverse` is ignored in that case since equality has no direction)."""
     candidate_to_patterns: dict[str, set[str]] = {}
     for value in literals:
         for candidate in _candidates(value):
@@ -90,37 +114,51 @@ def query_matches(db_path: Path, literals: list[str], *, reverse: bool = False, 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
-        candidates_sql = " UNION ALL ".join("SELECT ? AS value" for _ in candidates)
-        if exact:
-            join_condition = "l.value = q.value"
-        elif reverse:
-            join_condition = "instr(l.value, q.value) > 0"
-        else:
-            join_condition = "instr(q.value, l.value) > 0"
-        rows = conn.execute(
-            f"""
+        recorded = conn.execute(
+            """
             SELECT
-                q.value AS query,
                 l.value AS literal,
                 c.id AS case_id,
                 c.scenario_name AS scenario,
-                l.kind AS kind,
+                l.situation AS situation,
+                l.string_kind AS string_kind,
                 l.source_kind AS source_kind,
                 l.dynamic AS dynamic,
                 sf.path AS file,
                 l.source_line AS line,
                 l.step_text AS step_text
-            FROM ({candidates_sql}) q
-            JOIN literals l ON {join_condition}
+            FROM literals l
             JOIN cases c ON c.id = l.case_id
             JOIN source_files sf ON sf.id = l.source_file
-            ORDER BY q.value, c.id, sf.path, l.source_line
-            """,
-            candidates,
+            """
         ).fetchall()
     finally:
         conn.close()
-    return [{**dict(row), "patterns": sorted(candidate_to_patterns[row["query"]])} for row in rows]
+
+    # The same (value, string_kind) recurs on many rows; decide each match once per candidate.
+    rows_by_literal: dict[tuple[str, str], list[sqlite3.Row]] = {}
+    for row in recorded:
+        rows_by_literal.setdefault((row["literal"], row["string_kind"]), []).append(row)
+
+    matched_rows = []
+    for candidate in candidates:
+        for (value, string_kind), rows in rows_by_literal.items():
+            matched = match_confidence(value, candidate, string_kind, reverse=reverse, force_exact=exact)
+            if matched is None or matched[1] < min_confidence:
+                continue
+            algorithm, confidence = matched
+            matched_rows.extend(
+                {
+                    "query": candidate,
+                    **dict(row),
+                    "match_algorithm": algorithm,
+                    "match_confidence": confidence,
+                    "patterns": sorted(candidate_to_patterns[candidate]),
+                }
+                for row in rows
+            )
+    matched_rows.sort(key=lambda row: (row["query"], row["case_id"], row["file"], row["line"]))
+    return matched_rows
 
 
 def aggregate_by_file(rows: list[dict], *, split_steps: bool = False) -> list[dict]:
@@ -132,8 +170,9 @@ def aggregate_by_file(rows: list[dict], *, split_steps: bool = False) -> list[di
     file. `patterns` collapses to the sorted, deduped union of every row's `patterns`
     -- the originally-provided value(s) that matched this literal/case/file, which can
     be more than one when several provided values match the same recorded literal.
-    Neither `step_text` nor `patterns` is part of `FIELDS`, so they only surface in
-    `--format json/ndjson`.
+    `match_confidence` is the highest any provided value scored against the group's literal.
+    Neither `step_text`, `patterns` nor `match_algorithm` is part of `FIELDS`, so they only
+    surface in `--format json/ndjson`.
 
     Pass `split_steps=True` to keep distinct step wordings as separate rows instead of
     folding them into one row's `step_text` list: the group key then also includes
@@ -142,7 +181,15 @@ def aggregate_by_file(rows: list[dict], *, split_steps: bool = False) -> list[di
     than a list."""
     groups: dict[tuple, dict] = {}
     for row in rows:
-        key = (row["literal"], row["case_id"], row["scenario"], row["kind"], row["source_kind"], row["file"])
+        key = (
+            row["literal"],
+            row["case_id"],
+            row["scenario"],
+            row["situation"],
+            row["string_kind"],
+            row["source_kind"],
+            row["file"],
+        )
         if split_steps:
             key += (row["step_text"],)
         group = groups.setdefault(
@@ -151,8 +198,11 @@ def aggregate_by_file(rows: list[dict], *, split_steps: bool = False) -> list[di
                 "literal": row["literal"],
                 "case_id": row["case_id"],
                 "scenario": row["scenario"],
-                "kind": row["kind"],
+                "situation": row["situation"],
+                "string_kind": row["string_kind"],
                 "source_kind": row["source_kind"],
+                "match_algorithm": row["match_algorithm"],
+                "match_confidence": row["match_confidence"],
                 "file": row["file"],
                 "dynamic": 0,
                 "_line_numbers": set(),
@@ -161,6 +211,7 @@ def aggregate_by_file(rows: list[dict], *, split_steps: bool = False) -> list[di
             },
         )
         group["dynamic"] = group["dynamic"] or row["dynamic"]
+        group["match_confidence"] = max(group["match_confidence"], row["match_confidence"])
         group["_line_numbers"].add(row["line"])
         group["_step_texts"].add(row["step_text"])
         group["_patterns"].update(row["patterns"])
@@ -224,7 +275,7 @@ def _write_text(rows: list[dict], literals: list[str]) -> None:
             dynamic = " [dynamic]" if row["dynamic"] else ""
             click.echo(
                 f"  case {row['case_id']} ({row['scenario']}) {row['file']}:{row['lines']} "
-                f"[{row['kind']}/{row['source_kind']}{dynamic}]"
+                f"[{row['string_kind']} {row['match_confidence']:.2f}, {row['situation']}/{row['source_kind']}{dynamic}]"
             )
 
     unmatched = [value for value in literals if not matched_queries.intersection(_candidates(value))]
@@ -246,7 +297,8 @@ def _write_text_grouped(rows: list[dict], literals: list[str]) -> None:
             dynamic = " [dynamic]" if record["dynamic"] else ""
             click.echo(
                 f'  literal "{record["literal"]}" case {record["case_id"]} ({record["scenario"]}) '
-                f"lines {record['lines']} [{record['kind']}/{record['source_kind']}{dynamic}]"
+                f"lines {record['lines']} [{record['string_kind']} {record['match_confidence']:.2f}, "
+                f"{record['situation']}/{record['source_kind']}{dynamic}]"
             )
 
     unmatched = [value for value in literals if not matched_queries.intersection(_candidates(value))]
@@ -288,9 +340,9 @@ def _write_text_grouped(rows: list[dict], literals: list[str]) -> None:
     is_flag=True,
     default=False,
     help=(
-        "Reverse the match direction: match when a given value is a substring of a "
-        "recorded literal, instead of the default (a recorded literal is a substring "
-        "of a given value)."
+        "Reverse the match direction of the substring-matched kinds: match when a given "
+        "value is a substring of a recorded literal, instead of the default (a recorded "
+        "literal is a substring of a given value)."
     ),
 )
 @click.option(
@@ -298,9 +350,16 @@ def _write_text_grouped(rows: list[dict], literals: list[str]) -> None:
     is_flag=True,
     default=False,
     help=(
-        "Match only values that are exactly equal to a recorded literal, instead of "
-        "substring matching. Mutually exclusive with --reverse."
+        "Match every kind of literal exactly (equal after whitespace normalization), "
+        "instead of per-kind matching. Mutually exclusive with --reverse."
     ),
+)
+@click.option(
+    "--min-confidence",
+    type=click.FloatRange(0.0, 1.0),
+    default=DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE,
+    show_default=True,
+    help="Minimum match confidence for a recorded literal to count (the service's min_literal_match_confidence).",
 )
 @click.option(
     "--group-by-step",
@@ -319,6 +378,7 @@ def cli(
     no_header: bool,
     reverse: bool,
     exact: bool,
+    min_confidence: float,
     group_by_step: bool,
 ) -> None:
     """Match changed literals (LITERALS_FILE, or stdin if omitted -- one literal per line)
@@ -336,7 +396,7 @@ def cli(
     if not literals:
         raise click.UsageError("No literals given (empty input).")
 
-    rows = query_matches(db, literals, reverse=reverse, exact=exact)
+    rows = query_matches(db, literals, reverse=reverse, exact=exact, min_confidence=min_confidence)
 
     if output_format == "text":
         if group_by_step:

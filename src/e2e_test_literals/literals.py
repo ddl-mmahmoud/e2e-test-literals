@@ -9,6 +9,7 @@ from behave.model_type import Argument
 from behave.step_registry import registry
 
 from .cucurc import resolve_var
+from .step_kinds import TABLE_HEADER, classify_argument
 
 # Parse-field names that are *always* a cucu variable name or a regex pattern in
 # every step registration that uses them (verified against every `@step`/`@given`/
@@ -62,7 +63,7 @@ class Source:
 
 
 def literals_from_arguments(
-    arguments: list[Argument], source: Source, step_text: str, static_vars: dict[str, str]
+    arguments: list[Argument], pattern: str, source: Source, step_text: str, static_vars: dict[str, str]
 ) -> list[dict]:
     """Every *named* captured argument whose value is a str (excludes cucu's `nth`-typed ints, etc.).
 
@@ -75,6 +76,9 @@ def literals_from_arguments(
     A named argument whose parse-field name is in `_STRUCTURAL_ARGUMENT_NAMES`
     is also dropped -- it holds a cucu variable name or a regex pattern, not
     product UI text (see that constant's docstring).
+
+    Each literal's `string_kind` is read from the registered step `pattern` the argument
+    came from (see step_kinds.py).
     """
     literals = []
     for argument in arguments:
@@ -87,7 +91,8 @@ def literals_from_arguments(
             literals.append(
                 {
                     "value": value,
-                    "kind": "argument",
+                    "situation": "argument",
+                    "string_kind": classify_argument(pattern, argument.name),
                     "dynamic": dynamic,
                     "source_kind": source.kind,
                     "source_file": source.file,
@@ -108,7 +113,8 @@ def literals_from_table(table: Table | None, source: Source, step_text: str, sta
         literals.append(
             {
                 "value": value,
-                "kind": "table_column",
+                "situation": "table_column",
+                "string_kind": TABLE_HEADER,
                 "dynamic": dynamic,
                 "source_kind": source.kind,
                 "source_file": source.file,
@@ -126,12 +132,13 @@ def literals_for_step(
     static_vars: dict[str, str],
 ) -> tuple[list[dict], UnmatchedStep | None]:
     """Literal dependencies for one step, plus an UnmatchedStep if it had no registered match."""
-    match = registry.find_match(step)
-    if match is None or match.arguments is None:
+    found = find_match_with_pattern(step)
+    if found is None or found[1].arguments is None:
         return [], UnmatchedStep(feature_file, scenario_name, step.name, step.line)
+    pattern, match = found
 
     source = Source(kind="direct", file=feature_file, line=step.line)
-    literals = literals_from_arguments(match.arguments, source, step.name, static_vars)
+    literals = literals_from_arguments(match.arguments, pattern, source, step.name, static_vars)
     literals += literals_from_table(step.table, source, step.name, static_vars)
     return literals, None
 
@@ -139,14 +146,13 @@ def literals_for_step(
 def find_match_with_pattern(step: Step):
     """Like `registry.find_match`, but also returns the registered pattern text.
 
-    `StepRegistry.find_match` (used by `literals_for_step` above, mirroring what
-    `cucu run` itself does) returns only a `Match` -- it discards the `Matcher`
-    (the object holding the original `@step(...)`/`@given(...)`/... registration
-    string) once it has extracted arguments from it. Pass B (templated steps,
-    see `templated.py`) needs that raw pattern string for two things: tagging a
-    TestRail case with which registered patterns its steps used, and recognizing
-    when a synthesized/embedded step recurses into one of this repo's own
-    templatized steps. Re-implements the small candidate loop from
+    `StepRegistry.find_match` (what `cucu run` itself uses) returns only a `Match` -- it
+    discards the `Matcher` (the object holding the original `@step(...)`/`@given(...)`/...
+    registration string) once it has extracted arguments from it. The raw pattern string
+    is needed for three things: classifying each argument's `string_kind` (see
+    step_kinds.py), tagging a TestRail case with which registered patterns its steps used
+    (Pass B, see `templated.py`), and recognizing when a synthesized/embedded step recurses
+    into one of this repo's own templatized steps. Re-implements the small candidate loop from
     `StepRegistry.find_match` (behave/step_registry.py) instead of calling it,
     since it does not expose the matched `Matcher` either.
 

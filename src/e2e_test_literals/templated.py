@@ -32,6 +32,7 @@ from .aggregate import _dedupe_literals
 from .bootstrap import bootstrap_step_registry
 from .cucurc import CUCURC_PATH, load_static_vars, resolve_var
 from .literals import _STRUCTURAL_ARGUMENT_NAMES, Source, find_match_with_pattern
+from .step_kinds import TABLE_HEADER, classify_argument
 
 STEPS_DIR = "tests/ui/features/steps"
 
@@ -361,7 +362,8 @@ def _own_literals_and_dependencies(
                     literals.append(
                         {
                             "value": value,
-                            "kind": "argument",
+                            "situation": "argument",
+                            "string_kind": classify_argument(step_pattern, argument.name),
                             "dynamic": dynamic,
                             "source_kind": source.kind,
                             "source_file": source.file,
@@ -376,7 +378,8 @@ def _own_literals_and_dependencies(
                         literals.append(
                             {
                                 "value": value,
-                                "kind": "table_column",
+                                "situation": "table_column",
+                                "string_kind": TABLE_HEADER,
                                 "dynamic": dynamic,
                                 "source_kind": source.kind,
                                 "source_file": source.file,

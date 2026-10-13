@@ -21,7 +21,6 @@ _ARGS = dict(
     updated_ref="updated",
     min_removal_confidence=0.85,
     min_literal_match_confidence=0.9,
-    match_method="substring_and_partial_ratio",
     min_invocation_confidence=0.0,
     invocation_max_length=300,
     extra_cases_allowed=None,

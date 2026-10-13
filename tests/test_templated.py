@@ -167,7 +167,8 @@ def test_extract_run_steps_text_unresolvable_for_reassigned_local_variable() -> 
 def test_merge_pattern_literals_follows_a_real_dependency_chain() -> None:
     literal_c = {
         "value": "C-literal",
-        "kind": "argument",
+        "situation": "argument",
+        "string_kind": "text",
         "dynamic": False,
         "source_kind": "templated",
         "source_file": "fake.py",
@@ -175,7 +176,8 @@ def test_merge_pattern_literals_follows_a_real_dependency_chain() -> None:
     }
     literal_d = {
         "value": "D-literal",
-        "kind": "argument",
+        "situation": "argument",
+        "string_kind": "text",
         "dynamic": False,
         "source_kind": "templated",
         "source_file": "fake.py",
@@ -195,7 +197,8 @@ def test_merge_pattern_literals_follows_a_real_dependency_chain() -> None:
 def test_merge_pattern_literals_breaks_a_direct_two_pattern_cycle() -> None:
     literal_a = {
         "value": "A-literal",
-        "kind": "argument",
+        "situation": "argument",
+        "string_kind": "text",
         "dynamic": False,
         "source_kind": "templated",
         "source_file": "fake.py",
@@ -203,7 +206,8 @@ def test_merge_pattern_literals_breaks_a_direct_two_pattern_cycle() -> None:
     }
     literal_b = {
         "value": "B-literal",
-        "kind": "argument",
+        "situation": "argument",
+        "string_kind": "text",
         "dynamic": False,
         "source_kind": "templated",
         "source_file": "fake.py",
@@ -225,7 +229,8 @@ def test_merge_pattern_literals_breaks_a_direct_two_pattern_cycle() -> None:
 def test_merge_pattern_literals_breaks_a_self_cycle() -> None:
     literal_e = {
         "value": "E-literal",
-        "kind": "argument",
+        "situation": "argument",
+        "string_kind": "text",
         "dynamic": False,
         "source_kind": "templated",
         "source_file": "fake.py",

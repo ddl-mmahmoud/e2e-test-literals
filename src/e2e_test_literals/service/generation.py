@@ -38,15 +38,18 @@ def db_path(sha: str):
 
 
 def _is_current_schema(path) -> bool:
-    """Whether a previously-built db has the routing tables' `meta` marker. Dbs are
-    retained forever and keyed by SHA, so ones built before routing data existed are still
-    on disk; they get rebuilt in place once (a db built where the routing files were absent
-    or failed still has `meta`, so that doesn't loop)."""
+    """Whether a previously-built db has the current schema: the routing tables' `meta`
+    marker, and the `literals.string_kind` column. Dbs are retained forever and keyed by
+    SHA, so ones built before either existed are still on disk; they get rebuilt in place
+    once (a db built where the routing files were absent or failed still has `meta`, so
+    that doesn't loop)."""
     conn = sqlite3.connect(path)
     try:
-        return (
+        has_meta = (
             conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").fetchone() is not None
         )
+        has_string_kind = any(row[1] == "string_kind" for row in conn.execute("PRAGMA table_info(literals)"))
+        return has_meta and has_string_kind
     finally:
         conn.close()
 

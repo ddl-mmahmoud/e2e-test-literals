@@ -18,7 +18,7 @@ import uuid
 from ..repo_checkout import GitError
 from . import config
 from .changed_literals_client import ChangedLiteralsError
-from .impact import MatchMethod, compute_impact
+from .impact import compute_impact
 
 
 @dataclasses.dataclass
@@ -51,7 +51,6 @@ def _run_job(
     updated_ref: str | None,
     min_removal_confidence: float,
     min_literal_match_confidence: float,
-    match_method: MatchMethod,
     min_invocation_confidence: float,
     invocation_max_length: int,
     extra_cases_allowed: int | None,
@@ -70,7 +69,6 @@ def _run_job(
             updated_ref,
             min_removal_confidence,
             min_literal_match_confidence,
-            match_method,
             min_invocation_confidence,
             invocation_max_length,
             extra_cases_allowed,
@@ -107,7 +105,6 @@ def create_job(
     updated_ref: str | None,
     min_removal_confidence: float,
     min_literal_match_confidence: float,
-    match_method: MatchMethod,
     min_invocation_confidence: float,
     invocation_max_length: int,
     extra_cases_allowed: int | None,
@@ -136,7 +133,6 @@ def create_job(
             updated_ref,
             min_removal_confidence,
             min_literal_match_confidence,
-            match_method,
             min_invocation_confidence,
             invocation_max_length,
             extra_cases_allowed,

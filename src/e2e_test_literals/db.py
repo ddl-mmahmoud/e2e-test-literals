@@ -28,7 +28,8 @@ CREATE TABLE literals (
     id INTEGER PRIMARY KEY,
     case_id INTEGER NOT NULL REFERENCES cases(id),
     value TEXT NOT NULL,
-    kind TEXT NOT NULL,
+    situation TEXT NOT NULL,         -- 'argument' | 'table_column'
+    string_kind TEXT NOT NULL,       -- what the string is (step_kinds.py); picks its match algorithm
     dynamic INTEGER NOT NULL,
     source_kind TEXT NOT NULL,
     source_file INTEGER NOT NULL REFERENCES source_files(id),
@@ -190,7 +191,8 @@ def write_sqlite(
                 (
                     case_id,
                     literal["value"],
-                    literal["kind"],
+                    literal["situation"],
+                    literal["string_kind"],
                     int(literal["dynamic"]),
                     literal["source_kind"],
                     _source_file_id(conn, source_file_ids, literal["source_file"]),
@@ -200,8 +202,9 @@ def write_sqlite(
                 for literal in case["literals"]
             ]
             conn.executemany(
-                "INSERT INTO literals (case_id, value, kind, dynamic, source_kind, source_file, source_line, step_text) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO literals "
+                "(case_id, value, situation, string_kind, dynamic, source_kind, source_file, source_line, step_text) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 literal_rows,
             )
 

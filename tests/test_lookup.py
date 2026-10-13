@@ -26,7 +26,8 @@ CREATE TABLE literals (
     id INTEGER PRIMARY KEY,
     case_id INTEGER NOT NULL,
     value TEXT NOT NULL,
-    kind TEXT NOT NULL,
+    situation TEXT NOT NULL,
+    string_kind TEXT NOT NULL,
     dynamic INTEGER NOT NULL,
     source_kind TEXT NOT NULL,
     source_file INTEGER NOT NULL,
@@ -46,13 +47,13 @@ def _build_db(tmp_path: Path) -> Path:
     conn.execute("INSERT INTO source_files (id, path) VALUES (1, 'a.feature')")
     conn.execute("INSERT INTO cases (id, feature_file, scenario_name) VALUES (101, 1, 'Scenario A')")
     conn.executemany(
-        "INSERT INTO literals (case_id, value, kind, dynamic, source_kind, source_file, source_line, step_text) "
-        "VALUES (101, 'Save', 'argument', 0, 'direct', 1, ?, 'I click the button \"Save\"')",
+        "INSERT INTO literals (case_id, value, situation, string_kind, dynamic, source_kind, source_file, source_line, step_text) "
+        "VALUES (101, 'Save', 'argument', 'text', 0, 'direct', 1, ?, 'I click the button \"Save\"')",
         [(10,), (15,)],
     )
     conn.execute(
-        "INSERT INTO literals (case_id, value, kind, dynamic, source_kind, source_file, source_line, step_text) "
-        "VALUES (101, '\"EXECUTION_ID\"', 'argument', 0, 'direct', 1, 20, 'some step')"
+        "INSERT INTO literals (case_id, value, situation, string_kind, dynamic, source_kind, source_file, source_line, step_text) "
+        "VALUES (101, '\"EXECUTION_ID\"', 'argument', 'text', 0, 'direct', 1, 20, 'some step')"
     )
     conn.commit()
     conn.close()
@@ -120,8 +121,8 @@ def test_aggregate_by_file_dedupes_step_text_across_lines_but_keeps_distinct_wor
     conn.execute("INSERT INTO source_files (id, path) VALUES (1, 'a.feature')")
     conn.execute("INSERT INTO cases (id, feature_file, scenario_name) VALUES (101, 1, 'Scenario A')")
     conn.executemany(
-        "INSERT INTO literals (case_id, value, kind, dynamic, source_kind, source_file, source_line, step_text) "
-        "VALUES (101, 'Save', 'argument', 0, 'direct', 1, ?, ?)",
+        "INSERT INTO literals (case_id, value, situation, string_kind, dynamic, source_kind, source_file, source_line, step_text) "
+        "VALUES (101, 'Save', 'argument', 'text', 0, 'direct', 1, ?, ?)",
         [(10, 'I click the button "Save"'), (15, 'I click the button "Save"'), (20, 'I wait to click "Save"')],
     )
     conn.commit()
@@ -142,8 +143,8 @@ def test_aggregate_by_file_split_steps_keeps_distinct_wordings_as_separate_recor
     conn.execute("INSERT INTO source_files (id, path) VALUES (1, 'a.feature')")
     conn.execute("INSERT INTO cases (id, feature_file, scenario_name) VALUES (101, 1, 'Scenario A')")
     conn.executemany(
-        "INSERT INTO literals (case_id, value, kind, dynamic, source_kind, source_file, source_line, step_text) "
-        "VALUES (101, 'Save', 'argument', 0, 'direct', 1, ?, ?)",
+        "INSERT INTO literals (case_id, value, situation, string_kind, dynamic, source_kind, source_file, source_line, step_text) "
+        "VALUES (101, 'Save', 'argument', 'text', 0, 'direct', 1, ?, ?)",
         [(10, 'I click the button "Save"'), (15, 'I click the button "Save"'), (20, 'I wait to click "Save"')],
     )
     conn.commit()
@@ -168,9 +169,12 @@ def test_aggregate_by_file_keeps_different_files_separate() -> None:
             "literal": "Save",
             "case_id": 1,
             "scenario": "s",
-            "kind": "argument",
+            "situation": "argument",
+            "string_kind": "text",
             "source_kind": "direct",
             "dynamic": 0,
+            "match_algorithm": "substring_and_partial_ratio",
+            "match_confidence": 1.0,
             "file": "a.feature",
             "line": 5,
             "step_text": 'I click the button "Save"',
@@ -180,9 +184,12 @@ def test_aggregate_by_file_keeps_different_files_separate() -> None:
             "literal": "Save",
             "case_id": 1,
             "scenario": "s",
-            "kind": "argument",
+            "situation": "argument",
+            "string_kind": "text",
             "source_kind": "direct",
             "dynamic": 1,
+            "match_algorithm": "substring_and_partial_ratio",
+            "match_confidence": 0.95,
             "file": "b.feature",
             "line": 7,
             "step_text": 'I click the button "Save"',
@@ -332,8 +339,8 @@ def _build_cross_case_step_db(tmp_path: Path) -> Path:
     conn.execute("INSERT INTO cases (id, feature_file, scenario_name) VALUES (101, 1, 'Scenario A')")
     conn.execute("INSERT INTO cases (id, feature_file, scenario_name) VALUES (102, 1, 'Scenario B')")
     conn.executemany(
-        "INSERT INTO literals (case_id, value, kind, dynamic, source_kind, source_file, source_line, step_text) "
-        "VALUES (?, 'Save', 'argument', 0, 'direct', 1, ?, ?)",
+        "INSERT INTO literals (case_id, value, situation, string_kind, dynamic, source_kind, source_file, source_line, step_text) "
+        "VALUES (?, 'Save', 'argument', 'text', 0, 'direct', 1, ?, ?)",
         [
             (101, 10, 'I click the button "Save"'),
             (101, 15, 'I click the button "Save"'),
@@ -489,3 +496,90 @@ def test_cli_errors_clearly_on_empty_input(tmp_path: Path) -> None:
     result = CliRunner().invoke(lookup.cli, ["--db", str(db_path), str(literals_file)])
 
     assert result.exit_code != 0
+
+
+def _build_kinds_db(tmp_path: Path) -> Path:
+    """Case 101 has the same wording recorded as a button label, as freeform text, as a
+    test-data name and as an opaque value -- one literal per `string_kind`."""
+    db_path = tmp_path / "case_index.sqlite"
+    conn = sqlite3.connect(db_path)
+    conn.executescript(_SCHEMA)
+    conn.execute("INSERT INTO source_files (id, path) VALUES (1, 'a.feature')")
+    conn.execute("INSERT INTO cases (id, feature_file, scenario_name) VALUES (101, 1, 'Scenario A')")
+    conn.executemany(
+        "INSERT INTO literals (case_id, value, situation, string_kind, dynamic, source_kind, source_file, source_line, "
+        "step_text) VALUES (101, ?, 'argument', ?, 0, 'direct', 1, ?, 'some step')",
+        [("Save", "button", 1), ("Save", "text", 2), ("Save", "data", 3), ("Save", "opaque", 4)],
+    )
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+def test_query_matches_applies_each_literals_string_kind_policy(tmp_path: Path) -> None:
+    db_path = _build_kinds_db(tmp_path)
+
+    larger = lookup.query_matches(db_path, ["Save your work before continuing"])
+    equal = lookup.query_matches(db_path, ["Save"])
+
+    check.equal([(row["string_kind"], row["match_confidence"]) for row in larger], [("text", 0.8)])
+    check.equal(
+        [(row["string_kind"], row["match_algorithm"], row["match_confidence"]) for row in equal],
+        [("button", "exact", 1.0), ("text", "substring_and_partial_ratio", 0.8)],
+        msg="data (0.3) is below the default floor and opaque never matches",
+    )
+
+
+def test_query_matches_min_confidence_lets_low_confidence_data_through(tmp_path: Path) -> None:
+    db_path = _build_kinds_db(tmp_path)
+
+    rows = lookup.query_matches(db_path, ["Save"], min_confidence=0.3)
+
+    check.equal([row["string_kind"] for row in rows], ["button", "text", "data"])
+
+
+def test_query_matches_exact_makes_every_kind_exact_but_opaque_still_never_matches(tmp_path: Path) -> None:
+    db_path = _build_kinds_db(tmp_path)
+
+    rows = lookup.query_matches(db_path, ["Save"], exact=True, min_confidence=0.3)
+
+    check.equal([row["string_kind"] for row in rows], ["button", "text", "data"])
+    check.equal(lookup.query_matches(db_path, ["Save your work"], exact=True, min_confidence=0.3), [])
+
+
+def test_query_matches_reverse_only_affects_substring_matched_kinds(tmp_path: Path) -> None:
+    db_path = _build_kinds_db(tmp_path)
+
+    rows = lookup.query_matches(db_path, ["Sav"], reverse=True, min_confidence=0.3)
+
+    check.equal([row["string_kind"] for row in rows], ["text"])
+
+
+def test_cli_min_confidence_option_and_string_kind_in_json_output(tmp_path: Path) -> None:
+    db_path = _build_kinds_db(tmp_path)
+    literals_file = tmp_path / "literals.txt"
+    literals_file.write_text("Save\n")
+
+    default = CliRunner().invoke(lookup.cli, ["--db", str(db_path), "--format", "json", str(literals_file)])
+    lowered = CliRunner().invoke(
+        lookup.cli, ["--db", str(db_path), "--format", "json", "--min-confidence", "0.3", str(literals_file)]
+    )
+
+    check.equal(default.exit_code, 0, msg=default.output)
+    check.equal(lowered.exit_code, 0, msg=lowered.output)
+    check.equal([record["string_kind"] for record in json.loads(default.output)], ["button", "text"])
+    lowered_records = json.loads(lowered.output)
+    check.equal([record["string_kind"] for record in lowered_records], ["button", "text", "data"])
+    check.equal(lowered_records[-1]["match_confidence"], 0.3)
+    check.equal(lowered_records[0]["match_algorithm"], "exact")
+    check.equal(lowered_records[0]["situation"], "argument")
+
+
+def test_query_matches_exact_kind_differing_only_by_case_is_found_at_reduced_confidence(tmp_path: Path) -> None:
+    db_path = _build_kinds_db(tmp_path)
+
+    rows = lookup.query_matches(db_path, ["save"])
+
+    button = [row for row in rows if row["string_kind"] == "button"]
+    check.equal([(row["match_algorithm"], row["match_confidence"]) for row in button], [("exact", 0.7)])
+    check.equal(lookup.query_matches(db_path, ["save"], min_confidence=0.71, exact=True), [])

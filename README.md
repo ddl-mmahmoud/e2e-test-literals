@@ -55,8 +55,7 @@ this exact flow as a runnable script -- edit its placeholders and run it.
 | `updated_ref` | required\* | Post-change ref of `literals_repo`. |
 | `pr_number` | omitted | \*Instead of `base_ref`/`updated_ref`: a GitHub pull request of `literals_repo`; its base is compared against its branch tip. Exactly one of the two forms is required. |
 | `min_removal_confidence` | `0.85` | Only removed strings that `changed_literals` scores at or above this are reported (how likely it is to really be user-facing UI text). |
-| `min_literal_match_confidence` | `0.9` | Minimum match score between a removed string and a test literal for it to count as a hit. |
-| `match_method` | `substring_and_partial_ratio` | How a test literal is compared to a removed string; see below. |
+| `min_literal_match_confidence` | `0.7` | Minimum match score between a removed string and a test literal for it to count as a hit. How a literal is compared depends on its kind of string; see below. |
 | `min_invocation_confidence` | `0.0` | Only cases matched at or above this get into `recommended_invocations` (a match's confidence is the lower of the removal's `confidence` and its `match_confidence`). The default recommends every matched case. |
 | `invocation_max_length` | `300` | Split each recommended `/test-e2e` line at tag boundaries so it is at most this many characters; `0` disables splitting. |
 | `extra_cases_allowed` | omitted | Tag substitution (see below): most cases, summed over all lines, that shared tags may run beyond the matched ones. |
@@ -67,16 +66,26 @@ A `pr_number` is resolved with one GitHub REST call, authenticated with the same
 The result reports the resolved commit SHAs as `base_ref`/`updated_ref` (and echoes
 `pr_number`).
 
-`match_method` is one of:
+#### How a test literal is matched
 
-- `substring` -- the test literal must appear in the removed string (case-insensitive).
-  Every match has confidence 1.0.
-- `partial_ratio` -- rapidfuzz fuzzy score alone, no containment required. Catches
-  paraphrases and typos, but is noisier.
-- `substring_and_partial_ratio` (default) -- containment is required, and the fuzzy score
-  only grades the confidence of matches that already passed it.
+Every recorded test literal has a `string_kind`, read from the registered step pattern the
+literal came from (`step_kinds.py`: the noun right before the quoted argument, e.g.
+`I click the button "{name}"` -> `button`), and the kind picks how it is compared to a
+removed string (`matching.py`). Buttons, links and the like have short names which tests
+match in their entirety, so they must *equal* the removed string; freeform text only has
+to occur in it.
 
-Test literals shorter than 3 characters never match under any method.
+| `string_kind` | Algorithm | Confidence |
+|---|---|---|
+| `button`, `link`, `tab`, `menu`, `menu_item`, `checkbox`, `radio_button`, `dropdown`, `option`, `input`, `table_header` (DataTable header cells), `image_alt` | `exact`: equal to the removed string after whitespace normalization | 1.0 if case matches; 0.7 if it differs only by case |
+| `text`, `element`, `unknown` (anything not classified yet) | `substring_and_partial_ratio`: contained in the removed string (case-insensitive), with rapidfuzz's `partial_ratio` grading the confidence | graded, scaled by 0.8 (a substring is a weaker match than equality): a clean containment scores 0.8, a loose one (case mismatch, a hit inside a longer word) falls below the 0.7 default floor |
+| `data` (names of things a test creates or opens: projects, workspaces, ...) | `exact` (case-insensitively too) | flat 0.3 -- below the default `min_literal_match_confidence`, so only reported when a caller lowers it |
+| `opaque` (usernames, passwords, tokens, ids, paths, urls, durations, ...) | never | -- |
+
+Test literals shorter than 3 characters never match, whatever their kind. Each entry in
+`matched_test_literals` reports the `string_kind` and `match_algorithm` that produced it.
+The kind -> algorithm table is `POLICIES` in `step_kinds.py`; an unlisted kind gets the
+`text` behavior, so a step nobody has classified is never silently dropped.
 
 ### Result
 
@@ -84,7 +93,7 @@ Test literals shorter than 3 characters never match under any method.
 {
   "test_repo": ..., "test_ref": ..., "test_sha": ...,   // the resolved test revision
   "literals_repo": ..., "base_ref": ..., "updated_ref": ..., "pr_number": ...,  // null unless given
-  "min_removal_confidence": ..., "min_literal_match_confidence": ..., "match_method": ...,
+  "min_removal_confidence": ..., "min_literal_match_confidence": ...,
   "min_invocation_confidence": ..., "invocation_max_length": ...,
   "extra_cases_allowed": ..., "missing_cases_allowed": ...,   // null when omitted
   "total": 12,
@@ -95,7 +104,8 @@ Test literals shorter than 3 characters never match under any method.
       "confidence": 0.95, "change": "removed",
       "matched_test_literals": [
         {
-          "value": "Create Project", "match_confidence": 1.0,
+          "value": "Create Project", "string_kind": "button", "match_algorithm": "exact",
+          "match_confidence": 1.0,
           "case_id": 17, "scenario_name": "...", "tags": ["@testrail(1234)"],
           "source_file": "...", "source_line": 8, "step_text": "..."
         }
@@ -162,6 +172,9 @@ Indexing turns a test repo at a given ref into a small per-revision sqlite datab
 2. **Pass A -- feature files.** Every `.feature` file is parsed; each scenario carrying a
    `@testrail(####)` tag becomes a *case*, and the quoted strings and table-column values
    in its steps are recorded as *literals*, along with the step text and source location.
+   Each literal records its `situation` (`argument` or `table_column`) and its `string_kind`
+   (`button`, `text`, `data`, ... -- see "How a test literal is matched"), which is read
+   from the registered step pattern the argument came from.
 3. **Pass B -- templatized steps.** Custom steps defined by templates (whose
    `run_steps` bodies contain the real UI strings) are resolved by an AST scan, and the
    literals they use are attributed back to the cases that call them. Skippable with
@@ -178,7 +191,8 @@ Indexing turns a test repo at a given ref into a small per-revision sqlite datab
 5. **Write.** The result is written to sqlite (tables `source_files`, `cases`, `tags`,
    `literals`, `patterns`, plus the routing tables above and `meta`) via a temp file and
    atomic rename, so a half-built revision never appears. Revisions are kept indefinitely,
-   except that one built before routing data existed is rebuilt once on its next request.
+   except that one built before routing data or `literals.string_kind` existed is rebuilt once
+   on its next request.
 
 Per-revision databases are served read-only through on-demand Datasette subprocesses,
 which are started when first requested and stopped after sitting idle.
@@ -203,8 +217,8 @@ language-specific at the bottom; `CHANGED-LITERALS-DESIGN.md` has the full desig
 
 The impact check only uses the **removed** findings: an added string can't break an
 existing test, a removed or reworded one can. For each, `e2e_test_literals.service.impact`
-compares its text against every literal in the test revision's index (per
-`match_method`) and annotates it with the matches.
+compares its text against every literal in the test revision's index (per each literal's
+`string_kind`, see above) and annotates it with the matches.
 
 ### Process layout
 
@@ -256,11 +270,13 @@ uv run e2e-test-literals-lookup changed_literals.txt --format json
 # or pipe newline-delimited literals in on stdin
 ```
 
-Matches each provided literal against the case-index db's recorded literals (substring
-match by default -- the provided values are the changing product strings, the recorded
-ones are typically just the part a test actually checks; `--reverse` flips the direction,
-`--exact` disables substring matching). See `--help` for output formats
-(`text`/`tsv`/`csv`/`json`/`ndjson`) and `--group-by-step`.
+Matches each provided literal against the case-index db's recorded literals with the same
+per-`string_kind` matching, 3-character floor and confidence scores as the impact service
+(see "How a test literal is matched"; `--min-confidence` is `min_literal_match_confidence`,
+default 0.7). The provided values are the changing product strings, the recorded ones are
+typically just the part a test actually checks; `--reverse` flips the containment direction
+of the substring-matched kinds, `--exact` makes every kind exact. See `--help` for output
+formats (`text`/`tsv`/`csv`/`json`/`ndjson`) and `--group-by-step`.
 
 `lookup.py` has no dependency on the target repo at all -- it only reads the sqlite db,
 so it works standalone once a db has been generated.

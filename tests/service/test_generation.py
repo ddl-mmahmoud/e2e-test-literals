@@ -218,3 +218,27 @@ def test_resolve_and_generate_rebuilds_a_db_that_predates_routing_data(tmp_path:
         assert conn.execute("SELECT COUNT(*) FROM meta").fetchone()[0] >= 1
     finally:
         conn.close()
+
+
+def test_resolve_and_generate_rebuilds_a_db_that_predates_string_kind(tmp_path: Path, generation_env, monkeypatch):
+    repo = _make_test_repo(tmp_path)
+    sha = generation.resolve_and_generate(str(repo), "main")
+    conn = sqlite3.connect(generation.db_path(sha))
+    conn.execute("ALTER TABLE literals DROP COLUMN string_kind")  # a db built before kinds were recorded
+    conn.commit()
+    conn.close()
+    calls = []
+    real_index_from_git = generation.index_from_git
+    monkeypatch.setattr(
+        generation, "index_from_git", lambda *a, **k: calls.append(1) or real_index_from_git(*a, **k)
+    )
+
+    assert generation.resolve_and_generate(str(repo), "main") == sha
+    assert generation.resolve_and_generate(str(repo), "main") == sha
+
+    assert len(calls) == 1  # rebuilt once, then a cache hit again
+    conn = sqlite3.connect(generation.db_path(sha))
+    try:
+        assert "string_kind" in [row[1] for row in conn.execute("PRAGMA table_info(literals)")]
+    finally:
+        conn.close()

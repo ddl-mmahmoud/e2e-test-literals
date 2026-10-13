@@ -44,21 +44,20 @@ it's done -- mirrors changed-literals' app.py:
                     base_ref/updated_ref: diffs the PR's base against its branch, via
                     the same GITHUB_LITERALS_PAT used for cloning; the result reports
                     the SHAs it resolved to as base_ref/updated_ref)
-                    "min_literal_match_confidence": 0.9,
-                    "match_method": "substring_and_partial_ratio",
+                    "min_literal_match_confidence": 0.7,
                     "min_invocation_confidence": 0.0, "invocation_max_length": 300,
                     "extra_cases_allowed": null, "missing_cases_allowed": null}
              -> 202 Accepted, same job_id/status_url/result_url shape as /revisions.
                 Builds the test revision if needed, asks changed-literals to diff
                 literals_repo between base_ref/updated_ref, and checks which of its
                 REMOVED findings (at/above min_removal_confidence) contain a literal
-                the test revision depends on (at/above min_literal_match_confidence),
-                per match_method -- "substring" (plain containment), "partial_ratio"
-                (rapidfuzz score alone, no containment required), or
-                "substring_and_partial_ratio" (the default: containment required,
-                partial_ratio only grades its confidence). See impact.py's
-                `_match_literals` and CHANGED-LITERALS-IMPACT-PLAN.md for the full
-                design. The result also carries `recommended_invocations`: the
+                the test revision depends on (at/above min_literal_match_confidence).
+                How a literal is compared depends on what kind of string it is
+                (its `string_kind`): button/link/tab/... labels must equal the removed
+                string, freeform text only has to occur in it (graded by a fuzzy score),
+                test-data names match exactly at a flat 0.3 (so only when the floor is
+                lowered), and opaque values (usernames, ids, ...) never match. See
+                step_kinds.py, matching.py and CHANGED-LITERALS-IMPACT-PLAN.md. The result also carries `recommended_invocations`: the
                 `/test-e2e` lines (as strings, and as structured dicts) covering every
                 matched case whose confidence is at least min_invocation_confidence
                 (default 0.0 = all), each line at most invocation_max_length chars
@@ -151,7 +150,6 @@ class ImpactRequest(BaseModel):
     pr_number: int | None = Field(None, ge=1)
     min_removal_confidence: float = impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
     min_literal_match_confidence: float = impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
-    match_method: impact.MatchMethod = impact.DEFAULT_MATCH_METHOD
     min_invocation_confidence: float = impact.DEFAULT_MIN_INVOCATION_CONFIDENCE
     invocation_max_length: int = Field(impact.DEFAULT_INVOCATION_MAX_LENGTH, ge=0)
     extra_cases_allowed: int | None = Field(None, ge=0)
@@ -294,7 +292,6 @@ async def create_impact_job(payload: ImpactRequest) -> JSONResponse:
         payload.updated_ref,
         payload.min_removal_confidence,
         payload.min_literal_match_confidence,
-        payload.match_method,
         payload.min_invocation_confidence,
         payload.invocation_max_length,
         payload.extra_cases_allowed,
@@ -431,8 +428,7 @@ def index() -> dict:
             f"POST {config.PREFIX}changed-literals-impact  body: {{\"test_repo\": ..., "
             '"test_ref": "main", "literals_repo": ..., "base_ref": ..., "updated_ref": ...,'
             ' (or "pr_number": ... in place of base_ref/updated_ref)'
-            ' "min_removal_confidence": 0.85, "min_literal_match_confidence": 0.9,'
-            ' "match_method": "substring_and_partial_ratio"} -> 202, '
+            ' "min_removal_confidence": 0.85, "min_literal_match_confidence": 0.7} -> 202, '
             "same job shape, result is the annotated changed-literals report."
         ),
     }

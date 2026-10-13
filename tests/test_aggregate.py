@@ -18,7 +18,8 @@ def test_merge_templated_literals_is_a_noop_when_none() -> None:
             "literals": [
                 {
                     "value": "Save",
-                    "kind": "argument",
+                    "situation": "argument",
+                    "string_kind": "text",
                     "dynamic": False,
                     "source_kind": "direct",
                     "source_file": "some.feature",
@@ -45,7 +46,8 @@ def test_dedupe_literals_collapses_identical_entries_but_keeps_distinct_sources(
     literals = [
         {
             "value": "Save",
-            "kind": "argument",
+            "situation": "argument",
+            "string_kind": "text",
             "dynamic": False,
             "source_kind": "direct",
             "source_file": "some.feature",
@@ -53,7 +55,8 @@ def test_dedupe_literals_collapses_identical_entries_but_keeps_distinct_sources(
         },
         {
             "value": "Save",
-            "kind": "argument",
+            "situation": "argument",
+            "string_kind": "text",
             "dynamic": False,
             "source_kind": "direct",
             "source_file": "some.feature",
@@ -61,7 +64,8 @@ def test_dedupe_literals_collapses_identical_entries_but_keeps_distinct_sources(
         },  # exact repeat
         {
             "value": "Save",
-            "kind": "argument",
+            "situation": "argument",
+            "string_kind": "text",
             "dynamic": False,
             "source_kind": "direct",
             "source_file": "some.feature",
@@ -80,7 +84,8 @@ def test_dedupe_literals_drops_cucu_variable_noise() -> None:
     literals = [
         {
             "value": "Save",
-            "kind": "argument",
+            "situation": "argument",
+            "string_kind": "text",
             "dynamic": False,
             "source_kind": "direct",
             "source_file": "some.feature",
@@ -88,7 +93,8 @@ def test_dedupe_literals_drops_cucu_variable_noise() -> None:
         },
         {
             "value": "{USER_NAME}",
-            "kind": "argument",
+            "situation": "argument",
+            "string_kind": "text",
             "dynamic": True,
             "source_kind": "direct",
             "source_file": "some.feature",
@@ -96,7 +102,8 @@ def test_dedupe_literals_drops_cucu_variable_noise() -> None:
         },
         {
             "value": "Project-{SCENARIO_RUN_ID}",
-            "kind": "argument",
+            "situation": "argument",
+            "string_kind": "text",
             "dynamic": True,
             "source_kind": "direct",
             "source_file": "some.feature",
@@ -104,7 +111,8 @@ def test_dedupe_literals_drops_cucu_variable_noise() -> None:
         },
         {
             "value": "   ",
-            "kind": "table_column",
+            "situation": "table_column",
+            "string_kind": "table_header",
             "dynamic": False,
             "source_kind": "direct",
             "source_file": "some.feature",
