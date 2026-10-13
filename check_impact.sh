@@ -46,7 +46,7 @@ while [[ "$status" != "done" && "$status" != "error" ]]; do
   sleep 1
   status_resp=$(curl -sS -L -H "Authorization: Bearer $CLOUD_DOGFOOD_PAT" "$BASE/changed-literals-impact/jobs/$job_id")
   status=$(echo "$status_resp" | jq -r .status)
-  echo "$status_resp" | jq .
+  echo "$status_resp" | jq . >&2
 done
 
 if [[ "$status" == "error" ]]; then
