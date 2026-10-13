@@ -25,6 +25,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .routing import ROUTING_SUBPATHS
+
 
 class GitError(RuntimeError):
     """A git subprocess exited non-zero."""
@@ -169,6 +171,14 @@ def resolve_commit_sha(repo_url: str, ref: str, repo_cache: Path) -> str:
     return _run_repo(["rev-parse", "--verify", f"{ref}^{{commit}}"], repo_cache).stdout.decode().strip()
 
 
+def existing_subpaths(repo_dir: Path, ref: str, subpaths: tuple[str, ...]) -> tuple[str, ...]:
+    """The subset of `subpaths` that exists at `ref`. `git archive` fails outright if any
+    pathspec matches nothing, so paths a revision may legitimately lack (see
+    `checkout_tree`'s `optional_subpaths`) are filtered through this first."""
+    listed = set(_run_repo(["ls-tree", "--name-only", ref, "--", *subpaths], repo_dir).stdout.decode().splitlines())
+    return tuple(path for path in subpaths if path in listed)
+
+
 def materialize_subtree(repo_dir: Path, ref: str, subpaths: tuple[str, ...], dest: Path) -> None:
     """Extract `subpaths` at `ref` into `dest` as real files, preserving their full
     repo-relative paths (so `dest / "tests/ui/features"` etc. works exactly like a
@@ -192,6 +202,7 @@ def checkout_tree(
     *,
     repo_cache: Path | None = None,
     subpaths: tuple[str, ...] = TESTS_SUBPATHS,
+    optional_subpaths: tuple[str, ...] = ROUTING_SUBPATHS,
 ) -> Iterator[Path]:
     """Yield a temp directory containing `subpaths` of `repo_url` at `ref`, materialized
     as real files -- usable directly as the `repo_root` argument to `aggregate.build_case_index`
@@ -202,6 +213,9 @@ def checkout_tree(
     have moved upstream). Without it, a full bare clone is made in a temp dir and
     discarded once this call returns -- correct but slow for repeated runs against the
     same repo.
+
+    `optional_subpaths` are extracted too when `ref` has them, and silently skipped when
+    it doesn't (default: the routing files `routing.py` reads, which older revisions lack).
     """
     with tempfile.TemporaryDirectory(prefix="e2e-test-literals-checkout-") as tmp:
         dest = Path(tmp) / "tree"
@@ -209,12 +223,12 @@ def checkout_tree(
         if repo_cache is not None:
             ensure_repo_cache(repo_url, repo_cache)
             fetch_ref(repo_cache, ref, force=True)
-            materialize_subtree(repo_cache, ref, subpaths, dest)
+            materialize_subtree(repo_cache, ref, (*subpaths, *existing_subpaths(repo_cache, ref, optional_subpaths)), dest)
         else:
             with tempfile.TemporaryDirectory(prefix="e2e-test-literals-clone-") as clone_tmp:
                 bare_dir = Path(clone_tmp) / "repo.git"
                 ensure_repo_cache(repo_url, bare_dir)
                 fetch_ref(bare_dir, ref, force=False)
-                materialize_subtree(bare_dir, ref, subpaths, dest)
+                materialize_subtree(bare_dir, ref, (*subpaths, *existing_subpaths(bare_dir, ref, optional_subpaths)), dest)
 
         yield dest

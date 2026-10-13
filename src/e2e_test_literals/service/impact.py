@@ -18,9 +18,13 @@ from rapidfuzz import fuzz
 
 from . import changed_literals_client as cl_client
 from .generation import db_path, resolve_and_generate
+from .invocations import DEFAULT_MAX_LENGTH as DEFAULT_INVOCATION_MAX_LENGTH
+from .invocations import recommend_invocations
 
 DEFAULT_MIN_REMOVAL_CONFIDENCE = 0.85
 DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE = 0.9
+# Default 0.0: every case a removed finding matched gets an invocation.
+DEFAULT_MIN_INVOCATION_CONFIDENCE = 0.0
 
 # "substring": plain case-insensitive containment, `match_confidence` always 1.0 --
 #   the old exact-containment check, for callers who don't want fuzziness at all.
@@ -171,6 +175,22 @@ def _fetch_all_findings(job_id: str) -> list[dict]:
             return findings
 
 
+def _case_ids_for_invocations(findings: list[dict], min_invocation_confidence: float) -> list[int]:
+    """Case IDs of every matched test literal whose confidence clears the bar. A match's
+    confidence is the weaker of its two links -- how sure changed-literals is that the
+    text was removed (`finding["confidence"]`) and how well the literal matched that text
+    (`match_confidence`) -- so neither a shaky removal nor a shaky match alone can pull a
+    case into a recommendation that the caller asked to be stricter about."""
+    return sorted(
+        {
+            literal["case_id"]
+            for finding in findings
+            for literal in finding["matched_test_literals"]
+            if min(finding["confidence"], literal["match_confidence"]) >= min_invocation_confidence
+        }
+    )
+
+
 def compute_impact(
     test_repo: str,
     test_ref: str,
@@ -180,6 +200,8 @@ def compute_impact(
     min_removal_confidence: float = DEFAULT_MIN_REMOVAL_CONFIDENCE,
     min_literal_match_confidence: float = DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE,
     match_method: MatchMethod = DEFAULT_MATCH_METHOD,
+    min_invocation_confidence: float = DEFAULT_MIN_INVOCATION_CONFIDENCE,
+    invocation_max_length: int = DEFAULT_INVOCATION_MAX_LENGTH,
 ) -> dict:
     """The actual unit of work for a `POST /changed-literals-impact` job (see
     impact_jobs.py). Runs on the job's own worker thread; nothing here is async.
@@ -192,6 +214,11 @@ def compute_impact(
     see exactly which removed-and-confident findings were checked. `matched_test_literals`
     entries are only those at or above `min_literal_match_confidence` under `match_method`
     (see `_match_literals` and `MatchMethod`).
+
+    `recommended_invocations` (see `invocations.recommend_invocations`) lists the
+    `/test-e2e` lines that cover every matched case whose confidence is at least
+    `min_invocation_confidence` (see `_case_ids_for_invocations`), each line split to at
+    most `invocation_max_length` characters (0 = no limit).
     """
     if match_method not in _MATCH_METHODS:
         raise ValueError(f"match_method must be one of {_MATCH_METHODS}, got {match_method!r}")
@@ -223,6 +250,13 @@ def compute_impact(
         "min_removal_confidence": min_removal_confidence,
         "min_literal_match_confidence": min_literal_match_confidence,
         "match_method": match_method,
+        "min_invocation_confidence": min_invocation_confidence,
+        "invocation_max_length": invocation_max_length,
         "total": len(findings),
         "findings": findings,
+        "recommended_invocations": recommend_invocations(
+            db_path(test_sha),
+            _case_ids_for_invocations(findings, min_invocation_confidence),
+            max_length=invocation_max_length,
+        ),
     }

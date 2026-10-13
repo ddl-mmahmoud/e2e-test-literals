@@ -41,7 +41,8 @@ it's done -- mirrors changed-literals' app.py:
              body: {"test_repo": ..., "test_ref": "main", "literals_repo": ...,
                     "base_ref": ..., "updated_ref": ..., "min_removal_confidence": 0.85,
                     "min_literal_match_confidence": 0.9,
-                    "match_method": "substring_and_partial_ratio"}
+                    "match_method": "substring_and_partial_ratio",
+                    "min_invocation_confidence": 0.0, "invocation_max_length": 300}
              -> 202 Accepted, same job_id/status_url/result_url shape as /revisions.
                 Builds the test revision if needed, asks changed-literals to diff
                 literals_repo between base_ref/updated_ref, and checks which of its
@@ -52,7 +53,11 @@ it's done -- mirrors changed-literals' app.py:
                 "substring_and_partial_ratio" (the default: containment required,
                 partial_ratio only grades its confidence). See impact.py's
                 `_match_literals` and CHANGED-LITERALS-IMPACT-PLAN.md for the full
-                design.
+                design. The result also carries `recommended_invocations`: the
+                `/test-e2e` lines (as strings, and as structured dicts) covering every
+                matched case whose confidence is at least min_invocation_confidence
+                (default 0.0 = all), each line at most invocation_max_length chars
+                (0 = no limit). See invocations.py.
 
   GET /changed-literals-impact/jobs/<job_id>[/result]
              -> same job-status/result shape as /revisions/jobs/<job_id>[/result].
@@ -93,7 +98,7 @@ from pathlib import Path
 import datasette as _datasette_package
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
 from . import config, impact, impact_jobs
@@ -136,6 +141,8 @@ class ImpactRequest(BaseModel):
     min_removal_confidence: float = impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
     min_literal_match_confidence: float = impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
     match_method: impact.MatchMethod = impact.DEFAULT_MATCH_METHOD
+    min_invocation_confidence: float = impact.DEFAULT_MIN_INVOCATION_CONFIDENCE
+    invocation_max_length: int = Field(impact.DEFAULT_INVOCATION_MAX_LENGTH, ge=0)
 
 
 def _job_status_path(job_id: str) -> str:
@@ -267,6 +274,8 @@ async def create_impact_job(payload: ImpactRequest) -> JSONResponse:
         payload.min_removal_confidence,
         payload.min_literal_match_confidence,
         payload.match_method,
+        payload.min_invocation_confidence,
+        payload.invocation_max_length,
     )
     # Snapshot before starting the thread -- same race as create_revision above.
     body = _impact_job_body(job)

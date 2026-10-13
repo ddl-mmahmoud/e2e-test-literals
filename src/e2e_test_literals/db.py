@@ -42,12 +42,57 @@ CREATE TABLE patterns (
     pattern TEXT NOT NULL
 );
 
+CREATE TABLE meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- One row per @testrail(N)-tagged UI scenario or API test (see routing.py). Unlike `cases`
+-- this is not one-per-TestRail-ID: a repeated ID keeps every scenario, and API tests are
+-- included. `case_id` therefore has no FK to `cases`.
+CREATE TABLE entries (
+    id INTEGER PRIMARY KEY,
+    case_id INTEGER NOT NULL,
+    domain TEXT NOT NULL,            -- 'ui' | 'api'
+    source_file INTEGER NOT NULL REFERENCES source_files(id),
+    name TEXT NOT NULL,
+    root TEXT                        -- UI only: 'domino' | 'cloud_staging'
+);
+
+-- One row per (test_type, flag set) combination whose selectors match the entry. Raw
+-- routing output: no policy (e.g. dropping --vcluster) is applied.
+CREATE TABLE invocation_candidates (
+    id INTEGER PRIMARY KEY,
+    entry_id INTEGER NOT NULL REFERENCES entries(id),
+    test_type TEXT NOT NULL
+);
+
+-- kind 'tag' (UI scenario tag) / 'mark' (API pytest mark): `name` is the bare tag/mark,
+-- `value` NULL, `candidate_id` NULL.
+-- kind 'flag': a runner flag that is ON for that candidate, so `candidate_id` is set (a flag
+-- is only meaningful together with the test_type it was matched under -- an entry can be
+-- selected by `nexus` with on_prem and by `cucu` without). `name` is the bare flag name
+-- ('on_prem', 'vcluster', 'is_core', ...); `value` is NULL for a boolean flag, or the
+-- argument's value for a key=value argument. Absence of a row means the flag is off.
+CREATE TABLE entry_labels (
+    id INTEGER PRIMARY KEY,
+    entry_id INTEGER NOT NULL REFERENCES entries(id),
+    candidate_id INTEGER REFERENCES invocation_candidates(id),
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT
+);
+
 CREATE INDEX idx_cases_feature_file ON cases(feature_file);
 CREATE INDEX idx_tags_case_id ON tags(case_id);
 CREATE INDEX idx_literals_case_id ON literals(case_id);
 CREATE INDEX idx_literals_value ON literals(value);
 CREATE INDEX idx_literals_source_file ON literals(source_file);
 CREATE INDEX idx_patterns_case_id ON patterns(case_id);
+CREATE INDEX idx_entries_case_id ON entries(case_id);
+CREATE INDEX idx_invocation_candidates_entry_id ON invocation_candidates(entry_id);
+CREATE INDEX idx_entry_labels_entry_id ON entry_labels(entry_id);
+CREATE INDEX idx_entry_labels_candidate_id ON entry_labels(candidate_id);
 """
 
 
@@ -61,7 +106,40 @@ def _source_file_id(conn: sqlite3.Connection, ids_by_path: dict[str, int], path:
     return file_id
 
 
-def write_sqlite(cases: dict[int, dict], out_path: Path) -> None:
+def _write_routing(conn: sqlite3.Connection, ids_by_path: dict[str, int], entries: list[dict]) -> None:
+    for entry in entries:
+        entry_id = conn.execute(
+            "INSERT INTO entries (case_id, domain, source_file, name, root) VALUES (?, ?, ?, ?, ?)",
+            (
+                entry["case_id"],
+                entry["domain"],
+                _source_file_id(conn, ids_by_path, entry["file"]),
+                entry["name"],
+                entry["root"],
+            ),
+        ).lastrowid
+        conn.executemany(
+            "INSERT INTO entry_labels (entry_id, kind, name) VALUES (?, ?, ?)",
+            [(entry_id, kind, name) for kind, name in entry["labels"]],
+        )
+        for candidate in entry["candidates"]:
+            candidate_id = conn.execute(
+                "INSERT INTO invocation_candidates (entry_id, test_type) VALUES (?, ?)",
+                (entry_id, candidate["test_type"]),
+            ).lastrowid
+            conn.executemany(
+                "INSERT INTO entry_labels (entry_id, candidate_id, kind, name, value) VALUES (?, ?, 'flag', ?, ?)",
+                [(entry_id, candidate_id, flag, None) for flag in candidate["flags"]],
+            )
+
+
+def write_sqlite(
+    cases: dict[int, dict],
+    out_path: Path,
+    *,
+    routing: list[dict] | None = None,
+    routing_error: str | None = None,
+) -> None:
     """Write the aggregated case index to a fresh sqlite database at `out_path`.
 
     `case["scenarios"]` is a list for historical reasons (see aggregate.py) but
@@ -75,6 +153,10 @@ def write_sqlite(cases: dict[int, dict], out_path: Path) -> None:
     `source_files` dedupes every path referenced by `cases.feature_file` and
     `literals.source_file` (feature files for direct literals, python step
     modules for templated ones) into a single table, keyed by path.
+
+    `routing` is `routing.index_routing`'s entries (None if routing was not, or could not
+    be, computed -- `routing_error` then says why). Either way `meta.routing_indexed`
+    records which, so a reader can tell "no data" from "nothing selects this case".
     """
     if out_path.exists():
         out_path.unlink()
@@ -127,6 +209,13 @@ def write_sqlite(cases: dict[int, dict], out_path: Path) -> None:
                 "INSERT INTO patterns (case_id, pattern) VALUES (?, ?)",
                 [(case_id, pattern) for pattern in case["patterns"]],
             )
+
+        if routing is not None:
+            _write_routing(conn, source_file_ids, routing)
+        meta = [("routing_indexed", "1" if routing is not None else "0")]
+        if routing_error is not None:
+            meta.append(("routing_error", routing_error))
+        conn.executemany("INSERT INTO meta (key, value) VALUES (?, ?)", meta)
         conn.commit()
     finally:
         conn.close()

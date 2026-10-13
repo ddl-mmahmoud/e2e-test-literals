@@ -38,6 +38,7 @@ from .aggregate import build_case_index
 from .db import write_sqlite
 from .literals import UnmatchedStep
 from .repo_checkout import checkout_tree
+from .routing import RoutingError, index_routing
 from .templated import resolve_templated_literals
 
 DEFAULT_OUT = "cucu_literal_deps.sqlite"
@@ -56,6 +57,11 @@ class IndexResult:
     unmatched: list[UnmatchedStep]
     templated_patterns_total: int
     unresolvable_templated: list[str]
+    # `routing.index_routing`'s entries, or None if routing could not be computed for this
+    # checkout (`routing_error` says why) -- routing is best-effort and never fails the
+    # literal index, since a revision may predate the files it reads.
+    routing_entries: list[dict] | None = None
+    routing_error: str | None = None
 
 
 def index_from_local_checkout(repo_root: Path, *, skip_templated: bool = False) -> IndexResult:
@@ -71,11 +77,18 @@ def index_from_local_checkout(repo_root: Path, *, skip_templated: bool = False) 
 
     cases, unmatched = build_case_index(repo_root, templated_literals_by_step_pattern=templated_literals_by_step_pattern)
 
+    try:
+        routing_entries, routing_error = index_routing(repo_root), None
+    except RoutingError as exc:
+        routing_entries, routing_error = None, str(exc)
+
     return IndexResult(
         cases=cases,
         unmatched=unmatched,
         templated_patterns_total=len(templated_literals_by_step_pattern or {}),
         unresolvable_templated=unresolvable_templated,
+        routing_entries=routing_entries,
+        routing_error=routing_error,
     )
 
 
@@ -172,12 +185,16 @@ def cli(
         result = index_from_git(repo, ref, repo_cache=repo_cache, skip_templated=skip_templated)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    write_sqlite(result.cases, out_path)
+    write_sqlite(result.cases, out_path, routing=result.routing_entries, routing_error=result.routing_error)
 
     literal_count = sum(len(case["literals"]) for case in result.cases.values())
     click.echo(f"TestRail cases: {len(result.cases)}")
     click.echo(f"Literals: {literal_count}")
     click.echo(f"Unmatched steps: {len(result.unmatched)}")
+    if result.routing_entries is not None:
+        click.echo(f"Routing entries: {len(result.routing_entries)}")
+    else:
+        click.echo(f"Routing entries: unavailable ({result.routing_error})")
     if not skip_templated:
         resolved_count = result.templated_patterns_total - len(result.unresolvable_templated)
         click.echo(f"Templated step patterns resolved: {resolved_count}")

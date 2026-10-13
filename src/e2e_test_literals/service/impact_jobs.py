@@ -52,6 +52,8 @@ def _run_job(
     min_removal_confidence: float,
     min_literal_match_confidence: float,
     match_method: MatchMethod,
+    min_invocation_confidence: float,
+    invocation_max_length: int,
 ) -> None:
     with _jobs_lock:
         _jobs[job_id].status = "running"
@@ -66,6 +68,8 @@ def _run_job(
             min_removal_confidence,
             min_literal_match_confidence,
             match_method,
+            min_invocation_confidence,
+            invocation_max_length,
         )
     except (GitError, ChangedLiteralsError) as exc:
         print(f"impact job {job_id} failed ({type(exc).__name__}): {exc}")
@@ -98,6 +102,8 @@ def create_job(
     min_removal_confidence: float,
     min_literal_match_confidence: float,
     match_method: MatchMethod,
+    min_invocation_confidence: float,
+    invocation_max_length: int,
 ) -> tuple[ImpactJob, threading.Thread]:
     """Register a new pending job and return it together with its (not-yet-started)
     worker thread. The caller should snapshot whatever response it wants to build from
@@ -122,6 +128,8 @@ def create_job(
             min_removal_confidence,
             min_literal_match_confidence,
             match_method,
+            min_invocation_confidence,
+            invocation_max_length,
         ),
         daemon=True,
     )

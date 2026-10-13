@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import sqlite3
 import uuid
 
 import filelock
@@ -34,6 +35,20 @@ def repo_cache_path(repo_url: str):
 def db_path(sha: str):
     """Where a fully-generated revision's sqlite db lives once built."""
     return config.DB_DIR / f"{sha}.sqlite"
+
+
+def _is_current_schema(path) -> bool:
+    """Whether a previously-built db has the routing tables' `meta` marker. Dbs are
+    retained forever and keyed by SHA, so ones built before routing data existed are still
+    on disk; they get rebuilt in place once (a db built where the routing files were absent
+    or failed still has `meta`, so that doesn't loop)."""
+    conn = sqlite3.connect(path)
+    try:
+        return (
+            conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").fetchone() is not None
+        )
+    finally:
+        conn.close()
 
 
 def _lock_path(sha: str):
@@ -81,10 +96,10 @@ def resolve_and_generate(repo_url: str, ref: str, *, skip_templated: bool = Fals
 
     with filelock.FileLock(str(_lock_path(sha))):
         out_path = db_path(sha)
-        if not out_path.exists():
+        if not out_path.exists() or not _is_current_schema(out_path):
             result = index_from_git(repo_url, sha, repo_cache=cache, skip_templated=skip_templated)
             tmp_path = config.DB_DIR / f"{sha}.sqlite.tmp-{uuid.uuid4().hex}"
-            write_sqlite(result.cases, tmp_path)
+            write_sqlite(result.cases, tmp_path, routing=result.routing_entries, routing_error=result.routing_error)
             os.replace(tmp_path, out_path)
 
     return sha

@@ -56,6 +56,8 @@ this exact flow as a runnable script -- edit its placeholders and run it.
 | `min_removal_confidence` | `0.85` | Only removed strings that `changed_literals` scores at or above this are reported (how likely it is to really be user-facing UI text). |
 | `min_literal_match_confidence` | `0.9` | Minimum match score between a removed string and a test literal for it to count as a hit. |
 | `match_method` | `substring_and_partial_ratio` | How a test literal is compared to a removed string; see below. |
+| `min_invocation_confidence` | `0.0` | Only cases matched at or above this get into `recommended_invocations` (a match's confidence is the lower of the removal's `confidence` and its `match_confidence`). The default recommends every matched case. |
+| `invocation_max_length` | `300` | Split each recommended `/test-e2e` line at tag boundaries so it is at most this many characters; `0` disables splitting. |
 
 `match_method` is one of:
 
@@ -75,6 +77,7 @@ Test literals shorter than 3 characters never match under any method.
   "test_repo": ..., "test_ref": ..., "test_sha": ...,   // the resolved test revision
   "literals_repo": ..., "base_ref": ..., "updated_ref": ...,
   "min_removal_confidence": ..., "min_literal_match_confidence": ..., "match_method": ...,
+  "min_invocation_confidence": ..., "invocation_max_length": ...,
   "total": 12,
   "findings": [
     {
@@ -89,13 +92,29 @@ Test literals shorter than 3 characters never match under any method.
         }
       ]
     }
-  ]
+  ],
+  "recommended_invocations": {
+    "commands": ["/test-e2e nexus --on_prem --flavor=qe-aws-eks --tags=testrail(1234),testrail(5678)"],
+    "structured": [
+      {"test_type": "nexus", "tags": ["testrail(1234)", "testrail(5678)"],
+       "flags": ["on_prem"], "args": {"flavor": "qe-aws-eks"}}
+    ],
+    "uncovered": [],   // cases with no recommendable invocation, with the reason
+    "warnings": []     // e.g. this revision has no routing data
+  }
 }
 ```
 
 Every removed finding above `min_removal_confidence` is returned, including ones that
 matched nothing: an empty `matched_test_literals` means "checked, no test depends on it".
 Filter on a non-empty list to get the affected cases.
+
+`recommended_invocations` is the smallest set of `/test-e2e` lines that runs every
+matched case (above `min_invocation_confidence`), in two forms: the command strings, and
+the same lines as dicts. `flags` are the boolean flags that are on (bare names, no `--`),
+`args` the `--key=value` arguments they imply. It never recommends `--vcluster` or the
+core-workflow-only cases, and prefers plain `cucu` over nexus/global-config types. Only
+UI scenarios drive it; tag substitution to shorten lines is not done yet (`deferred.md`).
 
 ### Other endpoints
 
@@ -114,8 +133,8 @@ Indexing turns a test repo at a given ref into a small per-revision sqlite datab
 (`<sha>.sqlite`) -- the "case index".
 
 1. **Checkout.** The test repo is bare-cloned (cached across runs, keyed by repo URL), the
-   ref resolved to a SHA, and just the `tests/` subtree materialized
-   (`repo_checkout.py`). The SHA names the database, so a revision is only ever built
+   ref resolved to a SHA, and just the `tests/` subtree (plus the few routing files, when
+   the revision has them) materialized (`repo_checkout.py`). The SHA names the database, so a revision is only ever built
    once; later requests for the same SHA reuse it.
 2. **Pass A -- feature files.** Every `.feature` file is parsed; each scenario carrying a
    `@testrail(####)` tag becomes a *case*, and the quoted strings and table-column values
@@ -124,9 +143,19 @@ Indexing turns a test repo at a given ref into a small per-revision sqlite datab
    `run_steps` bodies contain the real UI strings) are resolved by an AST scan, and the
    literals they use are attributed back to the cases that call them. Skippable with
    `--skip-templated`.
-4. **Write.** The result is written to sqlite (tables `source_files`, `cases`, `tags`,
-   `literals`, `patterns`) via a temp file and atomic rename, so a half-built revision
-   never appears. Revisions are kept indefinitely.
+4. **Routing.** For every `@testrail(####)` UI scenario *and* API test, `routing.py`
+   records which `/test-e2e` test_type/flag combinations select it, by evaluating the test
+   repo's own routing code (`build/circleci/run_ui_tests.py`, `step_run_api_tests.py`) in an
+   isolated subprocess. This is stored as plain data (tables `entries`,
+   `invocation_candidates`, `entry_labels` -- tags/marks, and the `on_prem`/`vcluster`/
+   `is_core`/... flags each candidate needs), so the impact check never needs test-repo
+   source. Best-effort: a revision lacking those files still gets its literal index, with
+   `meta.routing_indexed = 0` and the reason in `meta.routing_error`. Its logic comes from
+   `~/_s/map_test_trigger_coverage.py`.
+5. **Write.** The result is written to sqlite (tables `source_files`, `cases`, `tags`,
+   `literals`, `patterns`, plus the routing tables above and `meta`) via a temp file and
+   atomic rename, so a half-built revision never appears. Revisions are kept indefinitely,
+   except that one built before routing data existed is rebuilt once on its next request.
 
 Per-revision databases are served read-only through on-demand Datasette subprocesses,
 which are started when first requested and stopped after sitting idle.
