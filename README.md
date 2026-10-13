@@ -58,6 +58,8 @@ this exact flow as a runnable script -- edit its placeholders and run it.
 | `match_method` | `substring_and_partial_ratio` | How a test literal is compared to a removed string; see below. |
 | `min_invocation_confidence` | `0.0` | Only cases matched at or above this get into `recommended_invocations` (a match's confidence is the lower of the removal's `confidence` and its `match_confidence`). The default recommends every matched case. |
 | `invocation_max_length` | `300` | Split each recommended `/test-e2e` line at tag boundaries so it is at most this many characters; `0` disables splitting. |
+| `extra_cases_allowed` | omitted | Tag substitution (see below): most cases, summed over all lines, that shared tags may run beyond the matched ones. |
+| `missing_cases_allowed` | omitted | Tag substitution: most matched cases, summed over all lines, that may keep an explicit `testrail(N)` tag because no shared tag selects them. |
 
 `match_method` is one of:
 
@@ -78,6 +80,7 @@ Test literals shorter than 3 characters never match under any method.
   "literals_repo": ..., "base_ref": ..., "updated_ref": ...,
   "min_removal_confidence": ..., "min_literal_match_confidence": ..., "match_method": ...,
   "min_invocation_confidence": ..., "invocation_max_length": ...,
+  "extra_cases_allowed": ..., "missing_cases_allowed": ...,   // null when omitted
   "total": 12,
   "findings": [
     {
@@ -114,7 +117,21 @@ matched case (above `min_invocation_confidence`), in two forms: the command stri
 the same lines as dicts. `flags` are the boolean flags that are on (bare names, no `--`),
 `args` the `--key=value` arguments they imply. It never recommends `--vcluster` or the
 core-workflow-only cases, and prefers plain `cucu` over nexus/global-config types. Only
-UI scenarios drive it; tag substitution to shorten lines is not done yet (`deferred.md`).
+UI scenarios drive it.
+
+**Tag substitution.** By default every line lists plain `testrail(N)` tags. Give
+`extra_cases_allowed` and/or `missing_cases_allowed` (non-negative integers; whichever is
+omitted is unbounded, but if both are omitted nothing is substituted) and shared scenario
+tags such as `smoke` replace the `testrail(N)` tags wherever that stays within the bounds,
+minimizing extra + missing. Each structured entry then carries `extra_cases`: the case IDs
+its shared tags also run beyond the matched ones. Test types that also run API tests keep
+plain tags (the API `--tags=` plugin only understands numeric IDs). If no selection fits the
+bounds, the plain-tag lines are returned and `warnings` says what is achievable (e.g. `with
+at most 0 missing: at least 1 extra`); a `warnings` entry also says if the search hit its
+node limit and the selection may not be minimal. The tags come from the per-revision db that
+is already built, so tuning these two parameters needs no re-index. The logic is ported from
+`map_test_trigger_coverage.py` (`--extra-cases-allowed` / `--missing-cases-allowed`); see
+`service/tag_planning.py`.
 
 ### Other endpoints
 

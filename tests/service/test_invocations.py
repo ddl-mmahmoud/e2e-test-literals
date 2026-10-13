@@ -10,14 +10,16 @@ from e2e_test_literals.db import write_sqlite
 from e2e_test_literals.service import invocations
 
 
-def _entry(case_id: int, candidates: list[tuple[str, list[str]]], *, domain: str = "ui") -> dict:
+def _entry(
+    case_id: int, candidates: list[tuple[str, list[str]]], *, domain: str = "ui", tags: tuple[str, ...] = ()
+) -> dict:
     return {
         "case_id": case_id,
         "domain": domain,
         "file": "tests/ui/features/some.feature" if domain == "ui" else "tests/api/tests/test_some.py",
         "name": f"case {case_id}",
         "root": "domino" if domain == "ui" else None,
-        "labels": [],
+        "labels": [["tag" if domain == "ui" else "mark", tag] for tag in (f"testrail({case_id})", *tags)],
         "candidates": [{"test_type": test_type, "flags": flags} for test_type, flags in candidates],
     }
 
@@ -197,3 +199,144 @@ def test_warns_on_a_db_from_before_routing_data_existed(tmp_path):
 
     assert stanza["commands"] == []
     assert stanza["warnings"] == ["no invocation recommendations: routing data was not indexed for this revision"]
+
+
+# -- tag substitution ---------------------------------------------------------------------
+
+
+def _tagged(case_ids: list[int], tags: tuple[str, ...], *, test_type: str = "cucu") -> list[dict]:
+    return [_entry(case_id, [(test_type, [])], tags=tags) for case_id in case_ids]
+
+
+def test_tags_are_never_substituted_unless_an_allowance_is_given(tmp_path):
+    stanza = _recommend(tmp_path, _tagged([1, 2], ("smoke",)), [1, 2])
+
+    assert stanza["commands"] == ["/test-e2e cucu --tags=testrail(1),testrail(2)"]
+    assert all("extra_cases" not in item for item in stanza["structured"])
+    assert stanza["warnings"] == []
+
+
+def test_a_tag_that_selects_exactly_the_batch_replaces_the_testrail_tags(tmp_path):
+    stanza = _recommend(tmp_path, _tagged([1, 2], ("smoke",)), [1, 2], extra_cases_allowed=0, missing_cases_allowed=0)
+
+    assert stanza["commands"] == ["/test-e2e cucu --tags=smoke"]
+    assert stanza["structured"] == [
+        {"test_type": "cucu", "tags": ["smoke"], "flags": [], "args": {}, "extra_cases": []}
+    ]
+    assert stanza["warnings"] == []
+
+
+def test_extra_cases_a_shared_tag_runs_outside_the_batch_are_reported(tmp_path):
+    # Case 3 is not in the batch but shares the tag, so the tag universe has to span the whole index.
+    entries = _tagged([1, 2, 3], ("smoke",))
+
+    stanza = _recommend(tmp_path, entries, [1, 2], extra_cases_allowed=1)
+
+    assert stanza["commands"] == ["/test-e2e cucu --tags=smoke"]
+    assert stanza["structured"][0]["extra_cases"] == [3]
+
+
+def test_only_one_allowance_given_leaves_the_other_unbounded(tmp_path):
+    entries = _tagged([1, 2, 3, 4], ("smoke",))
+
+    unbounded_extra = _recommend(tmp_path, entries, [1, 2], missing_cases_allowed=0)
+    assert unbounded_extra["commands"] == ["/test-e2e cucu --tags=smoke"]
+    assert unbounded_extra["structured"][0]["extra_cases"] == [3, 4]
+
+    unbounded_missing = _recommend(tmp_path, entries, [1, 2], extra_cases_allowed=0)
+    assert unbounded_missing["commands"] == ["/test-e2e cucu --tags=testrail(1),testrail(2)"]
+    assert unbounded_missing["structured"][0]["extra_cases"] == []
+
+
+def test_a_case_the_shared_tags_leave_out_keeps_its_explicit_tag(tmp_path):
+    entries = _tagged([1, 2], ("smoke",)) + _tagged([3], ())
+
+    stanza = _recommend(tmp_path, entries, [1, 2, 3], extra_cases_allowed=0, missing_cases_allowed=1)
+
+    assert stanza["commands"] == ["/test-e2e cucu --tags=smoke,testrail(3)"]
+    assert stanza["structured"][0]["extra_cases"] == []
+
+
+def test_unmeetable_allowances_fall_back_to_plain_tags_and_say_why_in_warnings(tmp_path):
+    entries = _tagged([1, 2, 3], ("smoke",))
+
+    stanza = _recommend(tmp_path, entries, [1, 2], extra_cases_allowed=0, missing_cases_allowed=0)
+
+    assert stanza["commands"] == ["/test-e2e cucu --tags=testrail(1),testrail(2)"]
+    assert all("extra_cases" not in item for item in stanza["structured"])
+    assert len(stanza["warnings"]) == 1
+    assert stanza["warnings"][0].startswith("tag substitution not applied, using testrail(N) tags: no tag selection fits")
+    assert "extra_cases_allowed=0" in stanza["warnings"][0] and "missing_cases_allowed=0" in stanza["warnings"][0]
+    assert "with at most 0 missing: at least 1 extra" in stanza["warnings"][0]
+
+
+def test_test_types_that_also_run_api_tests_keep_plain_tags(tmp_path):
+    entries = [
+        *_tagged([1, 2], ("smoke",), test_type="gpu"),
+        _entry(9, [("gpu", [])], domain="api"),  # gpu also runs an API test, whose --tags= plugin only reads digits
+    ]
+
+    stanza = _recommend(tmp_path, entries, [1, 2], extra_cases_allowed=0, missing_cases_allowed=0)
+
+    assert stanza["commands"] == ["/test-e2e gpu --tags=testrail(1),testrail(2)"]
+    assert stanza["structured"][0]["extra_cases"] == []
+
+
+def test_only_scenarios_the_invocation_selects_count_as_extras(tmp_path):
+    # Case 3 carries the tag but is only reachable through nexus, so `cucu --tags=smoke` never runs it.
+    entries = [*_tagged([1, 2], ("smoke",)), _entry(3, [("nexus", [])], tags=("smoke",))]
+
+    stanza = _recommend(tmp_path, entries, [1, 2], extra_cases_allowed=0, missing_cases_allowed=0)
+
+    assert stanza["commands"] == ["/test-e2e cucu --tags=smoke"]
+
+
+def test_tag_universe_leaves_out_testrail_tags(tmp_path):
+    entries = [_entry(1, [("cucu", [])], tags=("smoke",)), _entry(2, [("cucu", [])], tags=("smoke",))]
+    db_file = tmp_path / "db.sqlite"
+    write_sqlite({}, db_file, routing=entries)
+    import sqlite3
+
+    conn = sqlite3.connect(db_file)
+    try:
+        ui_entries = [e for es in invocations._load_entries(conn, ("ui",)).values() for e in es]
+    finally:
+        conn.close()
+
+    assert invocations._case_tag_universe(ui_entries, ("cucu", ())) == {"smoke": {1, 2}}
+
+
+def test_substituted_lines_are_split_at_max_length_with_extras_reported_per_line(tmp_path):
+    shared = tuple(f"area-{i}" for i in range(6))
+    # Each tag selects one batch case (1001..) plus one outsider (2001..), so every tag costs one extra.
+    entries = [_entry(1001 + i, [("cucu", [])], tags=(shared[i],)) for i in range(6)]
+    entries += [_entry(2001 + i, [("cucu", [])], tags=(shared[i],)) for i in range(6)]
+    batch = [1001 + i for i in range(6)]
+
+    stanza = _recommend(tmp_path, entries, batch, max_length=40, extra_cases_allowed=6, missing_cases_allowed=0)
+
+    assert len(stanza["commands"]) > 1
+    assert all(len(command) <= 40 for command in stanza["commands"])
+    tags = [tag for item in stanza["structured"] for tag in item["tags"]]
+    assert sorted(tags) == sorted(shared)
+    for item, command in zip(stanza["structured"], stanza["commands"]):
+        assert command.endswith("--tags=" + ",".join(item["tags"]))
+        assert item["extra_cases"] == sorted(2001 + int(tag.removeprefix("area-")) for tag in item["tags"])
+
+
+def test_substitution_keeps_each_lines_flags_and_arguments(tmp_path):
+    entries = [_entry(c, [("nexus", ["on_prem"])], tags=("smoke",)) for c in (1, 2)]
+
+    stanza = _recommend(tmp_path, entries, [1, 2], extra_cases_allowed=0)
+
+    assert stanza["commands"] == ["/test-e2e nexus --on_prem --flavor=qe-aws-eks --tags=smoke"]
+    assert stanza["structured"][0]["flags"] == ["on_prem"]
+
+
+def test_allowances_without_routing_data_just_warn_about_routing(tmp_path):
+    db_file = tmp_path / "db.sqlite"
+    write_sqlite({}, db_file, routing=None, routing_error="no routing")
+
+    stanza = invocations.recommend_invocations(db_file, [1], extra_cases_allowed=0)
+
+    assert stanza["commands"] == [] and stanza["warnings"] == ["no invocation recommendations: no routing"]

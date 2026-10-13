@@ -82,11 +82,35 @@ def test_default_min_removal_confidence_is_applied(impact_client: TestClient, mo
     _await_job(impact_client, create_resp.json()["job_id"])
 
     (args,) = captured_args
-    assert args[-5] == impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
-    assert args[-4] == impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
-    assert args[-3] == impact.DEFAULT_MATCH_METHOD
-    assert args[-2] == impact.DEFAULT_MIN_INVOCATION_CONFIDENCE == 0.0
-    assert args[-1] == impact.DEFAULT_INVOCATION_MAX_LENGTH == 300
+    assert args[-7] == impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
+    assert args[-6] == impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
+    assert args[-5] == impact.DEFAULT_MATCH_METHOD
+    assert args[-4] == impact.DEFAULT_MIN_INVOCATION_CONFIDENCE == 0.0
+    assert args[-3] == impact.DEFAULT_INVOCATION_MAX_LENGTH == 300
+    # Omitted means "no tag coalescing", not zero: both stay None all the way down.
+    assert args[-2] is None
+    assert args[-1] is None
+
+
+def test_tag_allowances_are_passed_through_when_given(impact_client: TestClient, monkeypatch):
+    captured_args = []
+    monkeypatch.setattr(
+        impact_jobs, "compute_impact", lambda *a, **k: captured_args.append(a) or {"total": 0, "findings": []}
+    )
+
+    body = {**_REQUEST_BODY, "extra_cases_allowed": 3}
+    create_resp = impact_client.post("/changed-literals-impact", json=body)
+    _await_job(impact_client, create_resp.json()["job_id"])
+
+    (args,) = captured_args
+    assert args[-2] == 3
+    assert args[-1] is None  # only one given: the other is left unbounded downstream, still not defaulted here
+
+
+@pytest.mark.parametrize("field", ["extra_cases_allowed", "missing_cases_allowed"])
+def test_negative_tag_allowance_is_422(impact_client: TestClient, field):
+    resp = impact_client.post("/changed-literals-impact", json={**_REQUEST_BODY, field: -1})
+    assert resp.status_code == 422
 
 
 def test_result_409_while_pending(impact_client: TestClient, monkeypatch):

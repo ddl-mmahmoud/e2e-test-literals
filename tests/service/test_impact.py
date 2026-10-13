@@ -321,6 +321,7 @@ def test_recommends_invocations_for_matched_cases(monkeypatch):
 
     assert result["min_invocation_confidence"] == 0.0
     assert result["invocation_max_length"] == 300
+    assert result["extra_cases_allowed"] is None and result["missing_cases_allowed"] is None
     assert result["recommended_invocations"] == {
         "commands": ["/test-e2e cucu --tags=testrail(1234)"],
         "structured": [{"test_type": "cucu", "tags": ["testrail(1234)"], "flags": [], "args": {}}],
@@ -386,3 +387,18 @@ def test_warns_instead_of_recommending_when_the_revision_has_no_routing_data(mon
     assert result["total"] == 1  # the literal-matching half still works
     assert result["recommended_invocations"]["commands"] == []
     assert len(result["recommended_invocations"]["warnings"]) == 1
+
+
+def test_tag_allowances_are_applied_to_the_recommendation(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])  # tagged `smoke`, nothing else is
+    _stub_changed_literals(monkeypatch, [_finding()])
+
+    result = impact.compute_impact(
+        "test-repo", "main", "product-repo", "base", "updated", extra_cases_allowed=0, missing_cases_allowed=0
+    )
+
+    assert result["extra_cases_allowed"] == 0 and result["missing_cases_allowed"] == 0
+    assert result["recommended_invocations"]["commands"] == ["/test-e2e cucu --tags=smoke"]
+    assert result["recommended_invocations"]["structured"][0]["extra_cases"] == []
+    assert result["findings"][0]["matched_test_literals"][0]["case_id"] == 1234  # findings unaffected

@@ -24,6 +24,8 @@ _ARGS = dict(
     match_method="substring_and_partial_ratio",
     min_invocation_confidence=0.0,
     invocation_max_length=300,
+    extra_cases_allowed=None,
+    missing_cases_allowed=None,
 )
 
 

@@ -42,7 +42,8 @@ it's done -- mirrors changed-literals' app.py:
                     "base_ref": ..., "updated_ref": ..., "min_removal_confidence": 0.85,
                     "min_literal_match_confidence": 0.9,
                     "match_method": "substring_and_partial_ratio",
-                    "min_invocation_confidence": 0.0, "invocation_max_length": 300}
+                    "min_invocation_confidence": 0.0, "invocation_max_length": 300,
+                    "extra_cases_allowed": null, "missing_cases_allowed": null}
              -> 202 Accepted, same job_id/status_url/result_url shape as /revisions.
                 Builds the test revision if needed, asks changed-literals to diff
                 literals_repo between base_ref/updated_ref, and checks which of its
@@ -57,7 +58,12 @@ it's done -- mirrors changed-literals' app.py:
                 `/test-e2e` lines (as strings, and as structured dicts) covering every
                 matched case whose confidence is at least min_invocation_confidence
                 (default 0.0 = all), each line at most invocation_max_length chars
-                (0 = no limit). See invocations.py.
+                (0 = no limit). See invocations.py. If extra_cases_allowed and/or
+                missing_cases_allowed is given (the other is then unbounded), shared
+                scenario tags replace testrail(N) tags within those bounds, each
+                structured entry reporting the `extra_cases` its tags also run; if
+                neither is given tags are never substituted. If the bounds can't be
+                met, plain tags are returned with an explanation in `warnings`.
 
   GET /changed-literals-impact/jobs/<job_id>[/result]
              -> same job-status/result shape as /revisions/jobs/<job_id>[/result].
@@ -143,6 +149,8 @@ class ImpactRequest(BaseModel):
     match_method: impact.MatchMethod = impact.DEFAULT_MATCH_METHOD
     min_invocation_confidence: float = impact.DEFAULT_MIN_INVOCATION_CONFIDENCE
     invocation_max_length: int = Field(impact.DEFAULT_INVOCATION_MAX_LENGTH, ge=0)
+    extra_cases_allowed: int | None = Field(None, ge=0)
+    missing_cases_allowed: int | None = Field(None, ge=0)
 
 
 def _job_status_path(job_id: str) -> str:
@@ -276,6 +284,8 @@ async def create_impact_job(payload: ImpactRequest) -> JSONResponse:
         payload.match_method,
         payload.min_invocation_confidence,
         payload.invocation_max_length,
+        payload.extra_cases_allowed,
+        payload.missing_cases_allowed,
     )
     # Snapshot before starting the thread -- same race as create_revision above.
     body = _impact_job_body(job)

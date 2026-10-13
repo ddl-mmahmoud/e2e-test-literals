@@ -8,8 +8,9 @@ from `~/_s/map_test_trigger_coverage.py` (a standalone copy of `internal-e2e-tes
 `build/circleci/map_test_trigger_coverage.py`). Unlike that script this reads precomputed
 data instead of importing the test repo, and a candidate's flags are generic: `on_prem`,
 `vcluster` and `is_core` are just flag names, and only `NEVER_EMIT_FLAGS` / `FLAG_ARGS`
-below know anything about them. Tag substitution (`--extra-cases-allowed` and friends) is
-deliberately not ported yet -- see deferred.md.
+below know anything about them. Tag substitution (`--extra-cases-allowed` /
+`--missing-cases-allowed`) is optional and lives in `tag_planning.py`; this module builds
+each invocation's tag universe from the same per-revision data and renders the result.
 
 Only UI entries drive recommendations by default (`domains`): this service exists to
 notice changed UI literals, and for a case shared with an API test the UI-selecting
@@ -18,7 +19,11 @@ test_type (gpu, cloud-staging) already runs both halves.
 
 from __future__ import annotations
 
+import math
+import re
 import sqlite3
+
+from .tag_planning import TagSelectionError, plan_tag_selection
 
 DEFAULT_MAX_LENGTH = 300
 
@@ -34,6 +39,8 @@ FLAG_ARGS: dict[str, dict[str, str]] = {"on_prem": {"flavor": "qe-aws-eks"}}
 _PREFERRED_TEST_TYPES = {"cucu", "system-standard"}
 
 Key = tuple[str, tuple[str, ...]]  # (test_type, sorted flag names)
+
+_TESTRAIL_TAG_RE = re.compile(r"testrail\(\d+\)")
 
 
 def _test_type_tier(test_type: str) -> int:
@@ -98,73 +105,100 @@ def _command_prefix(test_type: str, flags: tuple[str, ...]) -> str:
     return "/test-e2e " + " ".join(parts) + " --tags="
 
 
-def _split_case_ids(prefix: str, case_ids: list[int], max_length: int) -> list[list[int]]:
-    """Greedily chunk `case_ids` so each line is at most `max_length` chars (0 = no limit),
+def _split_tags(prefix: str, tags: list[str], max_length: int) -> list[list[str]]:
+    """Greedily chunk `tags` so each line is at most `max_length` chars (0 = no limit),
     splitting only between tags. A tag that alone exceeds the limit gets its own chunk."""
     if not max_length:
-        return [case_ids]
-    chunks: list[list[int]] = []
-    current: list[int] = []
+        return [tags]
+    chunks: list[list[str]] = []
+    current: list[str] = []
     current_len = len(prefix)
-    for case_id in case_ids:
-        tag_len = len(f"testrail({case_id})")
-        added = tag_len + (1 if current else 0)  # +1 for the joining comma
+    for tag in tags:
+        added = len(tag) + (1 if current else 0)  # +1 for the joining comma
         if current and current_len + added > max_length:
             chunks.append(current)
             current = []
             current_len = len(prefix)
-            added = tag_len
-        current.append(case_id)
+            added = len(tag)
+        current.append(tag)
         current_len += added
     if current:
         chunks.append(current)
     return chunks
 
 
-def _render(invocations: list[tuple[Key, list[int]]], max_length: int) -> tuple[list[str], list[dict]]:
+def _render(
+    invocations: list[tuple[Key, list[int]]],
+    max_length: int,
+    substitutions: dict[Key, tuple[str, ...]] | None = None,
+    universes: dict[Key, dict[str, set[int]]] | None = None,
+) -> tuple[list[str], list[dict]]:
+    """Command strings and structured dicts, index-aligned. With `substitutions` (key ->
+    shared tags chosen for that invocation; see `_substitute_tags`) the tags are those
+    followed by an explicit `testrail(N)` for each case no chosen tag selects, and every
+    structured dict gains `extra_cases`: the cases that line's shared tags also run beyond
+    the ones asked for (empty for a line that kept plain tags)."""
     commands: list[str] = []
     structured: list[dict] = []
-    for (test_type, flags), case_ids in invocations:
+    for key, case_ids in invocations:
+        test_type, flags = key
+        shared = (substitutions or {}).get(key, ())
+        selected: dict[str, set[int]] = {tag: (universes or {})[key][tag] for tag in shared}
+        selected_ids = set().union(*selected.values())
+        tags = [*shared, *(f"testrail({case_id})" for case_id in case_ids if case_id not in selected_ids)]
         prefix = _command_prefix(test_type, flags)
-        for chunk in _split_case_ids(prefix, case_ids, max_length):
-            tags = [f"testrail({case_id})" for case_id in chunk]
-            commands.append(prefix + ",".join(tags))
-            structured.append({"test_type": test_type, "tags": tags, "flags": list(flags), "args": _args_for(flags)})
+        for chunk in _split_tags(prefix, tags, max_length):
+            commands.append(prefix + ",".join(chunk))
+            item = {"test_type": test_type, "tags": chunk, "flags": list(flags), "args": _args_for(flags)}
+            if substitutions is not None:
+                chunk_ids = set().union(*(selected[tag] for tag in chunk if tag in selected))
+                item["extra_cases"] = sorted(chunk_ids - set(case_ids))
+            structured.append(item)
     return commands, structured
 
 
 def _load_entries(
-    conn: sqlite3.Connection, case_ids: list[int], domains: tuple[str, ...]
+    conn: sqlite3.Connection, domains: tuple[str, ...], case_ids: list[int] | None = None
 ) -> dict[int, list[dict]]:
-    """case_id -> entries (each with its `candidates` as (test_type, flags) pairs)."""
-    if not case_ids:
-        return {}
-    case_marks = ",".join("?" * len(case_ids))
-    domain_marks = ",".join("?" * len(domains))
+    """case_id -> entries, for every entry in `domains` (or only those of `case_ids`). Each
+    entry has its `candidates` as (test_type, flags) pairs and its bare scenario `tags`."""
+    where = f"entries.domain IN ({','.join('?' * len(domains))})"
+    params: list = [*domains]
+    if case_ids is not None:
+        where += f" AND entries.case_id IN ({','.join('?' * len(case_ids))})"
+        params += case_ids
     entries: dict[int, dict] = {}
-    for entry_id, case_id, domain, path, name in conn.execute(
+    for entry_id, case_id, path, name in conn.execute(
         f"""
-        SELECT entries.id, entries.case_id, entries.domain, source_files.path, entries.name
+        SELECT entries.id, entries.case_id, source_files.path, entries.name
         FROM entries JOIN source_files ON source_files.id = entries.source_file
-        WHERE entries.case_id IN ({case_marks}) AND entries.domain IN ({domain_marks})
+        WHERE {where}
         ORDER BY entries.id
         """,
-        [*case_ids, *domains],
+        params,
     ):
-        entries[entry_id] = {"case_id": case_id, "file": path, "name": name, "candidates": {}}
-    if entries:
-        entry_marks = ",".join("?" * len(entries))
-        for candidate_id, entry_id, test_type in conn.execute(
-            f"SELECT id, entry_id, test_type FROM invocation_candidates WHERE entry_id IN ({entry_marks})",
-            list(entries),
-        ):
-            entries[entry_id]["candidates"][candidate_id] = (test_type, set())
-        for entry_id, candidate_id, name in conn.execute(
-            f"SELECT entry_id, candidate_id, name FROM entry_labels "
-            f"WHERE kind = 'flag' AND entry_id IN ({entry_marks})",
-            list(entries),
-        ):
+        entries[entry_id] = {"case_id": case_id, "file": path, "name": name, "candidates": {}, "tags": set()}
+    for candidate_id, entry_id, test_type in conn.execute(
+        f"""
+        SELECT invocation_candidates.id, invocation_candidates.entry_id, invocation_candidates.test_type
+        FROM invocation_candidates JOIN entries ON entries.id = invocation_candidates.entry_id
+        WHERE {where}
+        """,
+        params,
+    ):
+        entries[entry_id]["candidates"][candidate_id] = (test_type, set())
+    for entry_id, candidate_id, kind, name in conn.execute(
+        f"""
+        SELECT entry_labels.entry_id, entry_labels.candidate_id, entry_labels.kind, entry_labels.name
+        FROM entry_labels JOIN entries ON entries.id = entry_labels.entry_id
+        WHERE entry_labels.kind IN ('flag', 'tag') AND {where}
+        """,
+        params,
+    ):
+        if kind == "flag":
             entries[entry_id]["candidates"][candidate_id][1].add(name)
+        else:
+            entries[entry_id]["tags"].add(name)
 
     by_case: dict[int, list[dict]] = {}
     for entry in entries.values():
@@ -173,12 +207,63 @@ def _load_entries(
     return by_case
 
 
+def _api_test_types(conn: sqlite3.Connection) -> set[str]:
+    """test_types that also run API tests. Their `--tags=` is handled by a plugin that keeps
+    only numeric IDs, so a non-numeric tag there would silently drop the API half."""
+    return {
+        test_type
+        for (test_type,) in conn.execute(
+            """
+            SELECT DISTINCT invocation_candidates.test_type
+            FROM invocation_candidates JOIN entries ON entries.id = invocation_candidates.entry_id
+            WHERE entries.domain = 'api'
+            """
+        )
+    }
+
+
+def _case_tag_universe(ui_entries: list[dict], key: Key) -> dict[str, set[int]]:
+    """tag -> case IDs of every UI scenario that bare tag selects under `key`. Each
+    scenario's own `testrail(N)` tag is excluded, since that is what substitution replaces."""
+    universe: dict[str, set[int]] = {}
+    for entry in ui_entries:
+        if key not in _requirement_keys(entry["candidates"]):
+            continue
+        for tag in entry["tags"]:
+            if not _TESTRAIL_TAG_RE.fullmatch(tag):
+                universe.setdefault(tag, set()).add(entry["case_id"])
+    return universe
+
+
+def _substitute_tags(
+    invocations: list[tuple[Key, list[int]]],
+    ui_entries: list[dict],
+    api_test_types: set[str],
+    extra_cases_allowed: int | None,
+    missing_cases_allowed: int | None,
+) -> tuple[dict[Key, tuple[str, ...]], dict[Key, dict[str, set[int]]], bool]:
+    """Shared tags for the eligible invocations (key -> tags), their tag universes, and
+    whether the search was cut short. Raises `TagSelectionError` if the allowances can't be
+    met. An allowance left as None is unbounded."""
+    keys = [key for key, _ in invocations if key[0] not in api_test_types]
+    universes = {key: _case_tag_universe(ui_entries, key) for key in keys}
+    case_ids_by_key = dict(invocations)
+    plan, exhausted = plan_tag_selection(
+        [(case_ids_by_key[key], universes[key]) for key in keys],
+        math.inf if extra_cases_allowed is None else extra_cases_allowed,
+        math.inf if missing_cases_allowed is None else missing_cases_allowed,
+    )
+    return dict(zip(keys, plan)), universes, exhausted
+
+
 def recommend_invocations(
     db_file,
     case_ids,
     *,
     max_length: int = DEFAULT_MAX_LENGTH,
     domains: tuple[str, ...] = ("ui",),
+    extra_cases_allowed: int | None = None,
+    missing_cases_allowed: int | None = None,
 ) -> dict:
     """The `recommended_invocations` stanza of a `/changed-literals-impact` result for
     `case_ids`, from the per-revision db at `db_file`:
@@ -193,11 +278,19 @@ def recommend_invocations(
     cases that have no usable invocation. If the db has no routing data (an index built
     where the routing files were absent or failed), `commands`/`structured` are empty and
     `warnings` says why.
+
+    Tag substitution is off unless `extra_cases_allowed` and/or `missing_cases_allowed` is
+    given (the other is then unbounded). On, shared scenario tags replace `testrail(N)`
+    tags wherever the bounds, summed over all lines, allow it (see `tag_planning.py`), and
+    every structured dict gains `extra_cases`, the case IDs its tags run beyond the batch.
+    Test types that also run API tests keep plain tags. If no selection fits the bounds,
+    the plain-tag lines are returned and `warnings` carries the achievable minima.
     """
     wanted = sorted({int(case_id) for case_id in case_ids})
     stanza: dict = {"commands": [], "structured": [], "uncovered": [], "warnings": []}
     if not wanted:
         return stanza
+    substituting = extra_cases_allowed is not None or missing_cases_allowed is not None
 
     conn = sqlite3.connect(db_file)
     try:
@@ -209,7 +302,13 @@ def recommend_invocations(
             reason = meta.get("routing_error") or "routing data was not indexed for this revision"
             stanza["warnings"].append(f"no invocation recommendations: {reason}")
             return stanza
-        entries_by_case = _load_entries(conn, wanted, domains)
+        entries_by_case = _load_entries(conn, domains, wanted)
+        # The tag universe spans every UI scenario, not just the batch: a shared tag is only
+        # safe to use if we know everything else it would run.
+        ui_entries = (
+            [entry for entries in _load_entries(conn, ("ui",)).values() for entry in entries] if substituting else []
+        )
+        api_test_types = _api_test_types(conn) if substituting else set()
     finally:
         conn.close()
 
@@ -229,5 +328,17 @@ def recommend_invocations(
                 continue
             requirements.append({"case_id": case_id, "keys": keys})
 
-    stanza["commands"], stanza["structured"] = _render(_minimize_invocations(requirements), max_length)
+    minimized = _minimize_invocations(requirements)
+    substitutions = universes = None
+    if substituting:
+        try:
+            substitutions, universes, exhausted = _substitute_tags(
+                minimized, ui_entries, api_test_types, extra_cases_allowed, missing_cases_allowed
+            )
+        except TagSelectionError as exc:
+            stanza["warnings"].append(f"tag substitution not applied, using testrail(N) tags: {exc}")
+        else:
+            if exhausted:
+                stanza["warnings"].append("tag search hit its node limit; the tag selection may not be minimal")
+    stanza["commands"], stanza["structured"] = _render(minimized, max_length, substitutions, universes)
     return stanza

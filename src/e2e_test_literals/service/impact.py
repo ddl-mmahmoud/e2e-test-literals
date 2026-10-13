@@ -202,6 +202,8 @@ def compute_impact(
     match_method: MatchMethod = DEFAULT_MATCH_METHOD,
     min_invocation_confidence: float = DEFAULT_MIN_INVOCATION_CONFIDENCE,
     invocation_max_length: int = DEFAULT_INVOCATION_MAX_LENGTH,
+    extra_cases_allowed: int | None = None,
+    missing_cases_allowed: int | None = None,
 ) -> dict:
     """The actual unit of work for a `POST /changed-literals-impact` job (see
     impact_jobs.py). Runs on the job's own worker thread; nothing here is async.
@@ -218,7 +220,11 @@ def compute_impact(
     `recommended_invocations` (see `invocations.recommend_invocations`) lists the
     `/test-e2e` lines that cover every matched case whose confidence is at least
     `min_invocation_confidence` (see `_case_ids_for_invocations`), each line split to at
-    most `invocation_max_length` characters (0 = no limit).
+    most `invocation_max_length` characters (0 = no limit). If either of
+    `extra_cases_allowed` / `missing_cases_allowed` is given, shared scenario tags replace
+    `testrail(N)` tags within those bounds (the other is then unbounded); if both are None,
+    tags are never substituted. These only shape `recommended_invocations`: the test db and
+    the changed-literals findings are fetched exactly as without them.
     """
     if match_method not in _MATCH_METHODS:
         raise ValueError(f"match_method must be one of {_MATCH_METHODS}, got {match_method!r}")
@@ -252,11 +258,15 @@ def compute_impact(
         "match_method": match_method,
         "min_invocation_confidence": min_invocation_confidence,
         "invocation_max_length": invocation_max_length,
+        "extra_cases_allowed": extra_cases_allowed,
+        "missing_cases_allowed": missing_cases_allowed,
         "total": len(findings),
         "findings": findings,
         "recommended_invocations": recommend_invocations(
             db_path(test_sha),
             _case_ids_for_invocations(findings, min_invocation_confidence),
             max_length=invocation_max_length,
+            extra_cases_allowed=extra_cases_allowed,
+            missing_cases_allowed=missing_cases_allowed,
         ),
     }
