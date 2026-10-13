@@ -12,7 +12,9 @@ from e2e_test_literals.service import changed_literals_client as cl_client
 from e2e_test_literals.service import config, impact
 
 
-def _write_test_db(sha: str, *, case_id: int = 1, value: str = "Saved successfully", tags=("smoke",)) -> None:
+def _write_test_db(
+    sha: str, *, case_id: int = 1, value: str = "Saved successfully", tags=("smoke",), routing=None
+) -> None:
     cases = {
         case_id: {
             "scenarios": [
@@ -36,7 +38,19 @@ def _write_test_db(sha: str, *, case_id: int = 1, value: str = "Saved successful
             "patterns": [],
         }
     }
-    write_sqlite(cases, config.DB_DIR / f"{sha}.sqlite")
+    write_sqlite(cases, config.DB_DIR / f"{sha}.sqlite", routing=routing)
+
+
+def _cucu_entry(case_id: int) -> dict:
+    return {
+        "case_id": case_id,
+        "domain": "ui",
+        "file": "tests/ui/features/example.feature",
+        "name": "Save a widget",
+        "root": "domino",
+        "labels": [["tag", "smoke"]],
+        "candidates": [{"test_type": "cucu", "flags": []}],
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -296,3 +310,79 @@ def test_fetch_all_findings_follows_pagination(monkeypatch):
     all_findings = impact._fetch_all_findings("job-1")
 
     assert [f["text"] for f in all_findings] == ["finding-0", "finding-1", "finding-2"]
+
+
+def test_recommends_invocations_for_matched_cases(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])
+    _stub_changed_literals(monkeypatch, [_finding()])
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
+    assert result["min_invocation_confidence"] == 0.0
+    assert result["invocation_max_length"] == 300
+    assert result["recommended_invocations"] == {
+        "commands": ["/test-e2e cucu --tags=testrail(1234)"],
+        "structured": [{"test_type": "cucu", "tags": ["testrail(1234)"], "flags": [], "args": {}}],
+        "uncovered": [],
+        "warnings": [],
+    }
+
+
+def test_no_invocations_when_nothing_matched(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])
+    _stub_changed_literals(monkeypatch, [_finding(text="Something unrelated")])
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
+    assert result["recommended_invocations"]["commands"] == []
+    assert result["recommended_invocations"]["structured"] == []
+
+
+def test_min_invocation_confidence_uses_the_weaker_of_removal_and_match_confidence(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])
+    # Exact containment (match_confidence 1.0) in a removal changed-literals is only 0.9 sure of.
+    _stub_changed_literals(monkeypatch, [_finding(confidence=0.9)])
+
+    default = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+    at_bar = impact.compute_impact(
+        "test-repo", "main", "product-repo", "base", "updated", min_invocation_confidence=0.9
+    )
+    above_bar = impact.compute_impact(
+        "test-repo", "main", "product-repo", "base", "updated", min_invocation_confidence=0.95
+    )
+
+    assert default["recommended_invocations"]["commands"] == ["/test-e2e cucu --tags=testrail(1234)"]
+    assert at_bar["recommended_invocations"]["commands"] == ["/test-e2e cucu --tags=testrail(1234)"]
+    assert above_bar["recommended_invocations"]["commands"] == []
+    # The findings themselves are unaffected -- the bar only gates invocations.
+    assert len(above_bar["findings"]) == 1
+    assert len(above_bar["findings"][0]["matched_test_literals"]) == 1
+
+
+def test_invocation_max_length_is_applied(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])
+    _stub_changed_literals(monkeypatch, [_finding()])
+
+    # A single tag that alone exceeds the limit still gets a line of its own, never dropped.
+    result = impact.compute_impact(
+        "test-repo", "main", "product-repo", "base", "updated", invocation_max_length=10
+    )
+
+    assert result["invocation_max_length"] == 10
+    assert result["recommended_invocations"]["commands"] == ["/test-e2e cucu --tags=testrail(1234)"]
+
+
+def test_warns_instead_of_recommending_when_the_revision_has_no_routing_data(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef")  # routing=None, as for a revision whose routing files were absent
+    _stub_changed_literals(monkeypatch, [_finding()])
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
+    assert result["total"] == 1  # the literal-matching half still works
+    assert result["recommended_invocations"]["commands"] == []
+    assert len(result["recommended_invocations"]["warnings"]) == 1

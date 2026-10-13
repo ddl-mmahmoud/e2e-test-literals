@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 
 import pytest
+from routing_helpers import write_fake_routing_repo
 
 from e2e_test_literals.service import config, generation
 
@@ -155,3 +156,65 @@ def test_concurrent_requests_for_the_same_revision_build_only_once(tmp_path: Pat
 
     assert len(calls) == 1
     assert len(set(results)) == 1
+
+
+def test_resolve_and_generate_stores_routing_data_when_the_revision_has_the_routing_files(
+    tmp_path: Path, generation_env
+):
+    repo = _make_test_repo(tmp_path)
+    write_fake_routing_repo(repo)
+    _git(repo, "add", ".")
+    _git(repo, "commit", "--quiet", "-m", "add routing files")
+
+    sha = generation.resolve_and_generate(str(repo), "main")
+
+    conn = sqlite3.connect(generation.db_path(sha))
+    try:
+        meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+        case_ids = {row[0] for row in conn.execute("SELECT case_id FROM entries")}
+    finally:
+        conn.close()
+    assert meta == {"routing_indexed": "1"}
+    assert case_ids == {1234, 67895, 555, 7001}
+
+
+def test_resolve_and_generate_still_builds_the_literal_index_when_routing_is_unavailable(
+    tmp_path: Path, generation_env
+):
+    repo = _make_test_repo(tmp_path)  # no build/circleci files, like a revision that predates them
+
+    sha = generation.resolve_and_generate(str(repo), "main")
+
+    conn = sqlite3.connect(generation.db_path(sha))
+    try:
+        meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+        literal_values = [row[0] for row in conn.execute("SELECT value FROM literals")]
+    finally:
+        conn.close()
+    assert "Saved successfully" in literal_values
+    assert meta["routing_indexed"] == "0"
+    assert "run_ui_tests.py is not present" in meta["routing_error"]
+
+
+def test_resolve_and_generate_rebuilds_a_db_that_predates_routing_data(tmp_path: Path, generation_env, monkeypatch):
+    repo = _make_test_repo(tmp_path)
+    sha = generation.resolve_and_generate(str(repo), "main")
+    conn = sqlite3.connect(generation.db_path(sha))
+    conn.execute("DROP TABLE meta")  # what a db built before routing data existed looks like
+    conn.commit()
+    conn.close()
+    calls = []
+    real_index_from_git = generation.index_from_git
+    monkeypatch.setattr(
+        generation, "index_from_git", lambda *a, **k: calls.append(1) or real_index_from_git(*a, **k)
+    )
+
+    assert generation.resolve_and_generate(str(repo), "main") == sha
+    assert generation.resolve_and_generate(str(repo), "main") == sha
+
+    assert len(calls) == 1  # rebuilt once, then a cache hit again
+    conn = sqlite3.connect(generation.db_path(sha))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM meta").fetchone()[0] >= 1
+    finally:
+        conn.close()

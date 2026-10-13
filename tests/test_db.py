@@ -125,3 +125,77 @@ def test_write_sqlite_merges_tags_across_duplicate_scenarios_for_one_case(tmp_pa
 
     check.equal(case_row, ("a.feature", "a"), msg="cases row uses the first scenario entry")
     check.equal(tags, ["smoke", "workspace"], msg="tags are unioned, not dropped, across duplicate scenarios")
+
+
+def _routing_entry(case_id: int, **overrides) -> dict:
+    entry = {
+        "case_id": case_id,
+        "domain": "ui",
+        "file": "tests/ui/features/some.feature",
+        "name": "some scenario",
+        "root": "domino",
+        "labels": [["tag", "smoke"]],
+        "candidates": [
+            {"test_type": "cucu", "flags": []},
+            {"test_type": "nexus", "flags": ["on_prem", "vcluster"]},
+        ],
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_write_sqlite_stores_routing_entries_with_flags_attached_to_their_candidate(tmp_path: Path) -> None:
+    out_path = tmp_path / "out.sqlite"
+
+    write_sqlite({}, out_path, routing=[_routing_entry(1)])
+
+    conn = sqlite3.connect(out_path)
+    entry_rows = conn.execute(
+        "SELECT entries.case_id, entries.domain, source_files.path, entries.name, entries.root "
+        "FROM entries JOIN source_files ON source_files.id = entries.source_file"
+    ).fetchall()
+    candidate_rows = conn.execute("SELECT test_type FROM invocation_candidates ORDER BY id").fetchall()
+    entry_level_labels = conn.execute(
+        "SELECT kind, name, value, candidate_id FROM entry_labels WHERE kind != 'flag'"
+    ).fetchall()
+    flag_rows = conn.execute(
+        "SELECT invocation_candidates.test_type, entry_labels.name, entry_labels.value "
+        "FROM entry_labels JOIN invocation_candidates ON invocation_candidates.id = entry_labels.candidate_id "
+        "WHERE entry_labels.kind = 'flag' ORDER BY entry_labels.id"
+    ).fetchall()
+    meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+    conn.close()
+
+    check.equal(entry_rows, [(1, "ui", "tests/ui/features/some.feature", "some scenario", "domino")])
+    check.equal(candidate_rows, [("cucu",), ("nexus",)])
+    check.equal(entry_level_labels, [("tag", "smoke", None, None)])
+    check.equal(flag_rows, [("nexus", "on_prem", None), ("nexus", "vcluster", None)])
+    check.equal(meta, {"routing_indexed": "1"})
+
+
+def test_write_sqlite_keeps_every_entry_of_a_repeated_case_id(tmp_path: Path) -> None:
+    out_path = tmp_path / "out.sqlite"
+    entries = [_routing_entry(7), _routing_entry(7, domain="api", name="test_api", root=None, labels=[["mark", "gpu"]])]
+
+    write_sqlite({}, out_path, routing=entries)
+
+    conn = sqlite3.connect(out_path)
+    rows = conn.execute("SELECT domain FROM entries WHERE case_id = 7 ORDER BY id").fetchall()
+    conn.close()
+    check.equal(rows, [("ui",), ("api",)])
+
+
+def test_write_sqlite_records_when_routing_was_not_indexed(tmp_path: Path) -> None:
+    out_path = tmp_path / "out.sqlite"
+
+    write_sqlite({}, out_path, routing=None, routing_error="run_ui_tests.py is not present at this revision")
+
+    conn = sqlite3.connect(out_path)
+    meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+    entry_count = conn.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+    conn.close()
+    check.equal(
+        meta,
+        {"routing_indexed": "0", "routing_error": "run_ui_tests.py is not present at this revision"},
+    )
+    check.equal(entry_count, 0)

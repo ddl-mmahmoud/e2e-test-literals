@@ -82,9 +82,11 @@ def test_default_min_removal_confidence_is_applied(impact_client: TestClient, mo
     _await_job(impact_client, create_resp.json()["job_id"])
 
     (args,) = captured_args
-    assert args[-3] == impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
-    assert args[-2] == impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
-    assert args[-1] == impact.DEFAULT_MATCH_METHOD
+    assert args[-5] == impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
+    assert args[-4] == impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
+    assert args[-3] == impact.DEFAULT_MATCH_METHOD
+    assert args[-2] == impact.DEFAULT_MIN_INVOCATION_CONFIDENCE == 0.0
+    assert args[-1] == impact.DEFAULT_INVOCATION_MAX_LENGTH == 300
 
 
 def test_result_409_while_pending(impact_client: TestClient, monkeypatch):
