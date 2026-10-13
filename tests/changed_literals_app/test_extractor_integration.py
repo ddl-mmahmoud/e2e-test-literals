@@ -8,6 +8,12 @@ def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
 
 
+def _head(repo: Path) -> str:
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
 def _write(repo: Path, rel_path: str, content: str) -> None:
     path = repo / rel_path
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -193,3 +199,30 @@ def test_repo_cache_picks_up_moved_branch(tmp_path: Path):
     second = extract(str(repo), "main", "feature", repo_cache=cache_dir)
     added_texts = {f.text for f in second if f.change == "added"}
     assert "New greeting" in added_texts
+
+
+def test_pull_request_head_not_on_any_branch_is_fetched_via_pull_ref(tmp_path: Path):
+    """A fork PR's head commit exists in the repo only under `refs/pull/<n>/head`."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet", "-b", "main")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+
+    _write(repo, "src/Widget.tsx", 'function Widget() { return <div>Old greeting</div>; }\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "--quiet", "-m", "base")
+    base_sha = _head(repo)
+
+    _git(repo, "checkout", "--quiet", "--detach")
+    _write(repo, "src/Widget.tsx", 'function Widget() { return <div>New greeting</div>; }\n')
+    _git(repo, "add", ".")
+    _git(repo, "commit", "--quiet", "-m", "pr head")
+    head_sha = _head(repo)
+    _git(repo, "update-ref", "refs/pull/5/head", head_sha)
+    _git(repo, "checkout", "--quiet", "main")
+
+    findings = extract(str(repo), base_sha, head_sha, pull_request=5)
+
+    assert {f.text for f in findings if f.change == "removed"} == {"Old greeting"}
+    assert {f.text for f in findings if f.change == "added"} == {"New greeting"}

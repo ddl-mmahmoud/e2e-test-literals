@@ -40,6 +40,10 @@ it's done -- mirrors changed-literals' app.py:
   POST /changed-literals-impact
              body: {"test_repo": ..., "test_ref": "main", "literals_repo": ...,
                     "base_ref": ..., "updated_ref": ..., "min_removal_confidence": 0.85,
+                    (or "pr_number": <GitHub PR of literals_repo> in place of
+                    base_ref/updated_ref: diffs the PR's base against its branch, via
+                    the same GITHUB_LITERALS_PAT used for cloning; the result reports
+                    the SHAs it resolved to as base_ref/updated_ref)
                     "min_literal_match_confidence": 0.9,
                     "match_method": "substring_and_partial_ratio",
                     "min_invocation_confidence": 0.0, "invocation_max_length": 300,
@@ -104,7 +108,7 @@ from pathlib import Path
 import datasette as _datasette_package
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from . import config, impact, impact_jobs
@@ -142,8 +146,9 @@ class ImpactRequest(BaseModel):
     test_repo: str
     test_ref: str = DEFAULT_REF
     literals_repo: str
-    base_ref: str
-    updated_ref: str
+    base_ref: str | None = None
+    updated_ref: str | None = None
+    pr_number: int | None = Field(None, ge=1)
     min_removal_confidence: float = impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
     min_literal_match_confidence: float = impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
     match_method: impact.MatchMethod = impact.DEFAULT_MATCH_METHOD
@@ -151,6 +156,14 @@ class ImpactRequest(BaseModel):
     invocation_max_length: int = Field(impact.DEFAULT_INVOCATION_MAX_LENGTH, ge=0)
     extra_cases_allowed: int | None = Field(None, ge=0)
     missing_cases_allowed: int | None = Field(None, ge=0)
+
+    @model_validator(mode="after")
+    def _exactly_one_way_to_name_the_diff(self) -> ImpactRequest:
+        if self.pr_number is None and not (self.base_ref and self.updated_ref):
+            raise ValueError("give either base_ref and updated_ref, or pr_number")
+        if self.pr_number is not None and (self.base_ref or self.updated_ref):
+            raise ValueError("pr_number can't be combined with base_ref/updated_ref")
+        return self
 
 
 def _job_status_path(job_id: str) -> str:
@@ -286,6 +299,7 @@ async def create_impact_job(payload: ImpactRequest) -> JSONResponse:
         payload.invocation_max_length,
         payload.extra_cases_allowed,
         payload.missing_cases_allowed,
+        payload.pr_number,
     )
     # Snapshot before starting the thread -- same race as create_revision above.
     body = _impact_job_body(job)
@@ -416,6 +430,7 @@ def index() -> dict:
             f"GET {config.PREFIX}revisions lists revisions already built. "
             f"POST {config.PREFIX}changed-literals-impact  body: {{\"test_repo\": ..., "
             '"test_ref": "main", "literals_repo": ..., "base_ref": ..., "updated_ref": ...,'
+            ' (or "pr_number": ... in place of base_ref/updated_ref)'
             ' "min_removal_confidence": 0.85, "min_literal_match_confidence": 0.9,'
             ' "match_method": "substring_and_partial_ratio"} -> 202, '
             "same job shape, result is the annotated changed-literals report."

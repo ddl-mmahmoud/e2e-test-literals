@@ -12,6 +12,8 @@ TEST_REF="main"
 LITERALS_REPO="https://github.com/cerebrotech/domino"
 BASE_REF="18f72106469b17c5338f076ac588a95dd1ba6374"
 UPDATED_REF="f58ba93730d887fafb610f6f3397d25de36a072a"
+# Optional: a GitHub PR number of LITERALS_REPO, used instead of BASE_REF/UPDATED_REF.
+PR_NUMBER="${PR_NUMBER:-}"
 MIN_REMOVAL_CONFIDENCE="0.9"
 # Optional tag substitution bounds; leave empty to keep plain testrail(N) tags.
 EXTRA_CASES_ALLOWED="${EXTRA_CASES_ALLOWED:-}"
@@ -22,9 +24,10 @@ request_body=$(jq -n \
   --arg test_repo "$TEST_REPO" --arg test_ref "$TEST_REF" --arg literals_repo "$LITERALS_REPO" \
   --arg base_ref "$BASE_REF" --arg updated_ref "$UPDATED_REF" \
   --argjson min_removal_confidence "$MIN_REMOVAL_CONFIDENCE" \
-  --arg extra "$EXTRA_CASES_ALLOWED" --arg missing "$MISSING_CASES_ALLOWED" \
-  '{test_repo: $test_repo, test_ref: $test_ref, literals_repo: $literals_repo, base_ref: $base_ref,
-    updated_ref: $updated_ref, min_removal_confidence: $min_removal_confidence}
+  --arg extra "$EXTRA_CASES_ALLOWED" --arg missing "$MISSING_CASES_ALLOWED" --arg pr "$PR_NUMBER" \
+  '{test_repo: $test_repo, test_ref: $test_ref, literals_repo: $literals_repo,
+    min_removal_confidence: $min_removal_confidence}
+   + (if $pr != "" then {pr_number: ($pr | tonumber)} else {base_ref: $base_ref, updated_ref: $updated_ref} end)
    + (if $extra != "" then {extra_cases_allowed: ($extra | tonumber)} else {} end)
    + (if $missing != "" then {missing_cases_allowed: ($missing | tonumber)} else {} end)')
 create_resp=$(curl -sS -L -X POST -H "Authorization: Bearer $CLOUD_DOGFOOD_PAT" "$BASE/changed-literals-impact" \

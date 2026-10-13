@@ -310,3 +310,51 @@ def test_index_returns_usage():
     resp = client.get("/")
     assert resp.status_code == 200
     assert "jobs" in resp.json()["usage"]
+
+
+# ── "pr" in place of base/updated ─────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"repo": "r"},
+        {"repo": "r", "base": "a"},
+        {"repo": "r", "pr": 5, "base": "a", "updated": "b"},
+        {"repo": "r", "pr": 0},
+    ],
+)
+def test_create_job_requires_exactly_one_way_to_name_the_diff(body):
+    assert client.post("/changed-literals/jobs", json=body).status_code == 422
+
+
+def test_pr_job_resolves_refs_and_reports_them(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(app, "resolve_pull_request", lambda repo, number: ("basesha", "headsha"))
+
+    def fake_extract(repo, base, updated, languages, repo_cache=None, pull_request=None):
+        seen.update(repo=repo, base=base, updated=updated, pull_request=pull_request)
+        return []
+
+    monkeypatch.setattr(app, "extract", fake_extract)
+
+    job_id, status = _submit_and_await({"repo": "https://github.com/acme/widgets", "pr": 12})
+
+    assert status["status"] == "done"
+    assert (status["base"], status["updated"]) == ("basesha", "headsha")
+    assert seen == {
+        "repo": "https://github.com/acme/widgets",
+        "base": "basesha",
+        "updated": "headsha",
+        "pull_request": 12,
+    }
+
+
+def test_pr_job_reports_resolution_failure_as_an_error(monkeypatch):
+    def boom(repo, number):
+        raise GitError("GitHub returned 404")
+
+    monkeypatch.setattr(app, "resolve_pull_request", boom)
+    job_id, status = _submit_and_await({"repo": "https://github.com/acme/widgets", "pr": 12})
+    assert status["status"] == "error"
+    assert "404" in status["error"]

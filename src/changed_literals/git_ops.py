@@ -17,6 +17,11 @@ class GitError(RuntimeError):
     """A git subprocess exited non-zero."""
 
 
+def pat() -> str | None:
+    """The GitHub PAT used for every authenticated call (git and GitHub API alike)."""
+    return os.environ.get("GITHUB_LITERALS_PAT") or None
+
+
 def _auth_args() -> list[str]:
     """`-c http.extraheader=...` from GITHUB_LITERALS_PAT, or [] if unset.
 
@@ -26,7 +31,7 @@ def _auth_args() -> list[str]:
     `.git/config`. Harmless to include even for a ssh:// or local-path
     remote -- git only consults http.* config for the HTTP transport.
     """
-    token = os.environ.get("GITHUB_LITERALS_PAT")
+    token = pat()
     if not token:
         return []
     credentials = base64.b64encode(f"x-access-token:{token}".encode()).decode()
@@ -126,6 +131,17 @@ def fetch_refs(repo: Path, refs: list[str], *, force: bool = False) -> None:
             [*_auth_args(), "fetch", "--quiet", "origin", f"+{ref}:refs/heads/{ref}"],
             cwd=repo,
         )
+
+
+def fetch_pull_head(repo: Path, number: int) -> None:
+    """Fetch GitHub's `refs/pull/<number>/head` into the same-named local ref.
+
+    A pull request's head commit isn't necessarily on any branch of this repo (a
+    fork's branch lives in the fork), but GitHub always publishes it here under this
+    ref, so fetching it is what makes the PR's head SHA resolvable locally.
+    """
+    ref = f"refs/pull/{number}/head"
+    _run([*_auth_args(), "fetch", "--quiet", "origin", f"+{ref}:{ref}"], cwd=repo)
 
 
 def diff_unified0(repo: Path, base_ref: str, updated_ref: str, pathspecs: list[str]) -> str:

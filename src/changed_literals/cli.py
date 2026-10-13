@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .extractor import extract
 from .git_ops import GitError
+from .github import resolve_pull_request
 from .languages import PATHSPECS
 
 
@@ -17,8 +18,13 @@ def build_parser() -> argparse.ArgumentParser:
         description="Find candidate UI strings touched by the diff between two git refs.",
     )
     parser.add_argument("--repo", required=True, help="Clonable git repo URL or local path")
-    parser.add_argument("--base", required=True, help="Base ref (pre-image)")
-    parser.add_argument("--updated", required=True, help="Updated ref (post-image)")
+    parser.add_argument("--base", help="Base ref (pre-image)")
+    parser.add_argument("--updated", help="Updated ref (post-image)")
+    parser.add_argument(
+        "--pr",
+        type=int,
+        help="GitHub pull request number, instead of --base/--updated: diffs the PR's base against its branch",
+    )
     parser.add_argument("--out", help="Write JSON findings to this file instead of stdout")
     parser.add_argument(
         "--languages",
@@ -36,12 +42,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.pr is None and not (args.base and args.updated):
+        parser.error("give either --base and --updated, or --pr")
+    if args.pr is not None and (args.base or args.updated):
+        parser.error("--pr can't be combined with --base/--updated")
     languages = {name.strip() for name in args.languages.split(",")} if args.languages else None
     repo_cache = Path(args.repo_cache) if args.repo_cache else None
 
     try:
-        findings = extract(args.repo, args.base, args.updated, languages, repo_cache=repo_cache)
+        base, updated = args.base, args.updated
+        if args.pr is not None:
+            base, updated = resolve_pull_request(args.repo, args.pr)
+        findings = extract(args.repo, base, updated, languages, repo_cache=repo_cache, pull_request=args.pr)
     except GitError as exc:
         print(f"changed-literals: {exc}", file=sys.stderr)
         return 1

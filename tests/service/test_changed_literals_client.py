@@ -78,3 +78,17 @@ def test_non_json_error_body_falls_back_to_raw_text(monkeypatch):
     )
     with pytest.raises(cl_client.ChangedLiteralsError, match="boom"):
         cl_client.get_job_status("abc")
+
+
+def test_create_job_with_pr_number_posts_pr_instead_of_refs(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.read()
+        return httpx.Response(202, json={"job_id": "abc", "status": "pending"})
+
+    monkeypatch.setattr(cl_client, "_transport", httpx.MockTransport(handler))
+
+    cl_client.create_job("repo-url", pr_number=12)
+
+    assert json.loads(captured["body"]) == {"repo": "repo-url", "pr": 12}

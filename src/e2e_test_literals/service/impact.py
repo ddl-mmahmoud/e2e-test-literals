@@ -195,8 +195,8 @@ def compute_impact(
     test_repo: str,
     test_ref: str,
     literals_repo: str,
-    base_ref: str,
-    updated_ref: str,
+    base_ref: str | None,
+    updated_ref: str | None,
     min_removal_confidence: float = DEFAULT_MIN_REMOVAL_CONFIDENCE,
     min_literal_match_confidence: float = DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE,
     match_method: MatchMethod = DEFAULT_MATCH_METHOD,
@@ -204,6 +204,7 @@ def compute_impact(
     invocation_max_length: int = DEFAULT_INVOCATION_MAX_LENGTH,
     extra_cases_allowed: int | None = None,
     missing_cases_allowed: int | None = None,
+    pr_number: int | None = None,
 ) -> dict:
     """The actual unit of work for a `POST /changed-literals-impact` job (see
     impact_jobs.py). Runs on the job's own worker thread; nothing here is async.
@@ -225,6 +226,11 @@ def compute_impact(
     `testrail(N)` tags within those bounds (the other is then unbounded); if both are None,
     tags are never substituted. These only shape `recommended_invocations`: the test db and
     the changed-literals findings are fetched exactly as without them.
+
+    The literals diff is named either by `base_ref`/`updated_ref` or by `pr_number`, a
+    GitHub pull request of `literals_repo` (then both refs are None): changed-literals
+    resolves it to the PR's base and branch-tip SHAs, which the result reports as
+    `base_ref`/`updated_ref`.
     """
     if match_method not in _MATCH_METHODS:
         raise ValueError(f"match_method must be one of {_MATCH_METHODS}, got {match_method!r}")
@@ -232,12 +238,13 @@ def compute_impact(
     test_sha = resolve_and_generate(test_repo, test_ref)
     test_literals = _load_test_literals(test_sha)
 
-    created = cl_client.create_job(literals_repo, base_ref, updated_ref)
+    created = cl_client.create_job(literals_repo, base_ref, updated_ref, pr_number=pr_number)
     status = _poll_changed_literals_job(created["job_id"])
     if status["status"] == "error":
         error = status.get("error") or "changed-literals job failed"
         print(f"changed-literals: remote job {created['job_id']} itself reported status=error: {error[:500]!r}")
         raise cl_client.ChangedLiteralsError(error)
+    base_ref, updated_ref = status.get("base", base_ref), status.get("updated", updated_ref)
 
     findings = []
     for finding in _fetch_all_findings(created["job_id"]):
@@ -253,6 +260,7 @@ def compute_impact(
         "literals_repo": literals_repo,
         "base_ref": base_ref,
         "updated_ref": updated_ref,
+        "pr_number": pr_number,
         "min_removal_confidence": min_removal_confidence,
         "min_literal_match_confidence": min_literal_match_confidence,
         "match_method": match_method,

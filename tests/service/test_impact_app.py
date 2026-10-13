@@ -150,3 +150,36 @@ def test_missing_required_field_is_422(impact_client: TestClient):
     del bad_body["base_ref"]
     resp = impact_client.post("/changed-literals-impact", json=bad_body)
     assert resp.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"base_ref": None, "updated_ref": None},
+        {"base_ref": None},
+        {"pr_number": 3},  # alongside base_ref/updated_ref
+        {"base_ref": None, "updated_ref": None, "pr_number": 0},
+    ],
+)
+def test_impact_request_requires_exactly_one_way_to_name_the_diff(impact_client: TestClient, overrides):
+    body = {**_REQUEST_BODY, **overrides}
+    body = {k: v for k, v in body.items() if v is not None}
+    assert impact_client.post("/changed-literals-impact", json=body).status_code == 422
+
+
+def test_impact_request_accepts_pr_number_in_place_of_refs(impact_client: TestClient, monkeypatch):
+    seen = {}
+
+    def fake_compute(*a, **k):
+        seen["args"], seen["kwargs"] = a, k
+        return {"total": 0, "findings": []}
+
+    monkeypatch.setattr(impact_jobs, "compute_impact", fake_compute)
+    body = {k: v for k, v in _REQUEST_BODY.items() if k not in ("base_ref", "updated_ref")}
+
+    resp = impact_client.post("/changed-literals-impact", json={**body, "pr_number": 3})
+
+    assert resp.status_code == 202
+    assert _await_job(impact_client, resp.json()["job_id"])["status"] == "done"
+    assert seen["args"][3:5] == (None, None)
+    assert seen["kwargs"]["pr_number"] == 3

@@ -51,8 +51,9 @@ this exact flow as a runnable script -- edit its placeholders and run it.
 | `test_repo` | required | Git URL of the e2e test repo to index. |
 | `test_ref` | `main` | Branch/tag/SHA of the test repo. |
 | `literals_repo` | required | Git URL of the product repo whose UI strings changed. |
-| `base_ref` | required | Pre-change ref of `literals_repo`. |
-| `updated_ref` | required | Post-change ref of `literals_repo`. |
+| `base_ref` | required\* | Pre-change ref of `literals_repo`. |
+| `updated_ref` | required\* | Post-change ref of `literals_repo`. |
+| `pr_number` | omitted | \*Instead of `base_ref`/`updated_ref`: a GitHub pull request of `literals_repo`; its base is compared against its branch tip. Exactly one of the two forms is required. |
 | `min_removal_confidence` | `0.85` | Only removed strings that `changed_literals` scores at or above this are reported (how likely it is to really be user-facing UI text). |
 | `min_literal_match_confidence` | `0.9` | Minimum match score between a removed string and a test literal for it to count as a hit. |
 | `match_method` | `substring_and_partial_ratio` | How a test literal is compared to a removed string; see below. |
@@ -60,6 +61,11 @@ this exact flow as a runnable script -- edit its placeholders and run it.
 | `invocation_max_length` | `300` | Split each recommended `/test-e2e` line at tag boundaries so it is at most this many characters; `0` disables splitting. |
 | `extra_cases_allowed` | omitted | Tag substitution (see below): most cases, summed over all lines, that shared tags may run beyond the matched ones. |
 | `missing_cases_allowed` | omitted | Tag substitution: most matched cases, summed over all lines, that may keep an explicit `testrail(N)` tag because no shared tag selects them. |
+
+A `pr_number` is resolved with one GitHub REST call, authenticated with the same
+`GITHUB_LITERALS_PAT` used for cloning (no `gh` CLI), and works for PRs from forks.
+The result reports the resolved commit SHAs as `base_ref`/`updated_ref` (and echoes
+`pr_number`).
 
 `match_method` is one of:
 
@@ -77,7 +83,7 @@ Test literals shorter than 3 characters never match under any method.
 ```
 {
   "test_repo": ..., "test_ref": ..., "test_sha": ...,   // the resolved test revision
-  "literals_repo": ..., "base_ref": ..., "updated_ref": ...,
+  "literals_repo": ..., "base_ref": ..., "updated_ref": ..., "pr_number": ...,  // null unless given
   "min_removal_confidence": ..., "min_literal_match_confidence": ..., "match_method": ...,
   "min_invocation_confidence": ..., "invocation_max_length": ...,
   "extra_cases_allowed": ..., "missing_cases_allowed": ...,   // null when omitted
@@ -265,7 +271,9 @@ so it works standalone once a db has been generated.
 uv run changed-literals --repo <url-or-path> --base <ref> --updated <ref> [--languages tsx,twirl] [--repo-cache DIR] [--out findings.json]
 ```
 
-Prints (or writes) the findings as JSON, with a summary on stderr.
+Give `--pr <number>` instead of `--base`/`--updated` to diff a GitHub pull request of
+`--repo` (its base against its branch). Prints (or writes) the findings as JSON, with a
+summary on stderr.
 
 ### Running the service locally
 

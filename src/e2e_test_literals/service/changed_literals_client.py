@@ -49,8 +49,10 @@ def _request(method: str, path: str, **kwargs) -> httpx.Response:
     raise ChangedLiteralsError(str(detail))
 
 
-def create_job(repo: str, base: str, updated: str) -> dict:
-    return _request("POST", "/changed-literals/jobs", json={"repo": repo, "base": base, "updated": updated}).json()
+def create_job(repo: str, base: str | None = None, updated: str | None = None, *, pr_number: int | None = None) -> dict:
+    """Either `base` and `updated`, or `pr_number` (changed-literals' "pr") in their place."""
+    body = {"repo": repo, "pr": pr_number} if pr_number is not None else {"repo": repo, "base": base, "updated": updated}
+    return _request("POST", "/changed-literals/jobs", json=body).json()
 
 
 def get_job_status(job_id: str) -> dict:

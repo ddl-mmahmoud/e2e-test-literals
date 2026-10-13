@@ -9,10 +9,15 @@ rather than one endpoint that blocks the caller until it's done:
   POST /changed-literals/jobs
              body: {"repo": ..., "base": ..., "updated": ...,
                      "languages": "ts,tsx" (optional), "refresh": false (optional)}
+                   or, in place of "base"/"updated", "pr": <GitHub PR number> to diff
+                   the PR's base against its branch (see github.py; resolved with the
+                   same GITHUB_LITERALS_PAT used for cloning). Exactly one of the two.
              -> 202 Accepted, body has job_id/status_url/result_url
 
   GET /changed-literals/jobs/<job_id>
-             -> job status: pending | running | done | error
+             -> job status: pending | running | done | error. Once the refs are known
+                (immediately, or after a "pr" is resolved) it also carries the "base"
+                and "updated" they resolved to.
 
   GET /changed-literals/jobs/<job_id>/result
              [?offset=0&limit=200]
@@ -75,11 +80,12 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from changed_literals.extractor import extract
 from changed_literals.finding import Finding
 from changed_literals.git_ops import GitError
+from changed_literals.github import resolve_pull_request
 from changed_literals.languages import PATHSPECS
 
 # Fixed, not DOMINO_RUN_HOST_PATH-derived -- unlike e2e_test_literals.service's own
@@ -147,7 +153,13 @@ def _cache_key(repo: str, base: str, updated: str, languages: set[str] | None) -
 
 
 def _cached_findings(
-    repo: str, base: str, updated: str, languages: set[str] | None, *, force_refresh: bool
+    repo: str,
+    base: str,
+    updated: str,
+    languages: set[str] | None,
+    *,
+    force_refresh: bool,
+    pull_request: int | None = None,
 ) -> list[Finding]:
     key = _cache_key(repo, base, updated, languages)
 
@@ -157,7 +169,9 @@ def _cached_findings(
         if entry is not None and time.time() - entry["computed_at"] < CACHE_TTL_SECONDS:
             return entry["findings"]
 
-    findings = extract(repo, base, updated, languages, repo_cache=_repo_cache_path(repo))
+    findings = extract(
+        repo, base, updated, languages, repo_cache=_repo_cache_path(repo), pull_request=pull_request
+    )
 
     with _cache_lock:
         _cache[key] = {"findings": findings, "computed_at": time.time()}
@@ -180,6 +194,8 @@ class Job:
     id: str
     status: str  # "pending" | "running" | "done" | "error"
     created_at: float
+    base: str | None = None  # the refs actually diffed; for a "pr" job, set once resolved
+    updated: str | None = None
     findings: list[Finding] | None = None
     error: str | None = None
 
@@ -197,13 +213,28 @@ def _prune_expired_jobs() -> None:
 
 
 def _run_job(
-    job_id: str, repo: str, base: str, updated: str, languages: set[str] | None, refresh: bool
+    job_id: str,
+    repo: str,
+    base: str | None,
+    updated: str | None,
+    pr: int | None,
+    languages: set[str] | None,
+    refresh: bool,
 ) -> None:
     with _jobs_lock:
         _jobs[job_id].status = "running"
 
     try:
-        findings = _cached_findings(repo, base, updated, languages, force_refresh=refresh)
+        if pr is not None:
+            # Resolved on every job, not cached: a PR's head moves as it's pushed to,
+            # and the findings cache below is keyed on the resulting SHAs anyway.
+            base, updated = resolve_pull_request(repo, pr)
+        assert base is not None and updated is not None  # JobRequest guarantees one mode
+        with _jobs_lock:
+            _jobs[job_id].base, _jobs[job_id].updated = base, updated
+        findings = _cached_findings(
+            repo, base, updated, languages, force_refresh=refresh, pull_request=pr
+        )
     except GitError as exc:
         error = str(exc)
     except Exception:
@@ -228,10 +259,19 @@ def _run_job(
 
 class JobRequest(BaseModel):
     repo: str
-    base: str
-    updated: str
+    base: str | None = None
+    updated: str | None = None
+    pr: int | None = Field(None, ge=1)
     languages: str | None = None
     refresh: bool = False
+
+    @model_validator(mode="after")
+    def _exactly_one_way_to_name_the_diff(self) -> JobRequest:
+        if self.pr is None and not (self.base and self.updated):
+            raise ValueError('give either "base" and "updated", or "pr"')
+        if self.pr is not None and (self.base or self.updated):
+            raise ValueError('"pr" can\'t be combined with "base"/"updated"')
+        return self
 
 
 def _job_status_path(job_id: str) -> str:
@@ -244,6 +284,8 @@ def _job_result_path(job_id: str) -> str:
 
 def _job_body(job: Job) -> dict:
     body = {"job_id": job.id, "status": job.status, "status_url": _job_status_path(job.id)}
+    if job.base is not None:
+        body["base"], body["updated"] = job.base, job.updated
     if job.status == "error":
         body["error"] = job.error
     if job.status == "done":
@@ -267,7 +309,15 @@ async def create_job(payload: JobRequest) -> Response:
 
     thread = threading.Thread(
         target=_run_job,
-        args=(job_id, payload.repo, payload.base, payload.updated, parsed_languages, payload.refresh),
+        args=(
+            job_id,
+            payload.repo,
+            payload.base,
+            payload.updated,
+            payload.pr,
+            parsed_languages,
+            payload.refresh,
+        ),
         daemon=True,
     )
     thread.start()
@@ -324,6 +374,7 @@ def index() -> dict:
         "service": "changed-literals",
         "usage": (
             f'POST {PREFIX}jobs  body: {{"repo": ..., "base": ..., "updated": ...}}'
+            f' (or "pr": <number> in place of base/updated)'
             f" -> 202 with status_url/result_url"
         ),
     }

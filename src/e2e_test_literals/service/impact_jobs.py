@@ -47,8 +47,8 @@ def _run_job(
     test_repo: str,
     test_ref: str,
     literals_repo: str,
-    base_ref: str,
-    updated_ref: str,
+    base_ref: str | None,
+    updated_ref: str | None,
     min_removal_confidence: float,
     min_literal_match_confidence: float,
     match_method: MatchMethod,
@@ -56,6 +56,7 @@ def _run_job(
     invocation_max_length: int,
     extra_cases_allowed: int | None,
     missing_cases_allowed: int | None,
+    pr_number: int | None,
 ) -> None:
     with _jobs_lock:
         _jobs[job_id].status = "running"
@@ -74,6 +75,7 @@ def _run_job(
             invocation_max_length,
             extra_cases_allowed,
             missing_cases_allowed,
+            pr_number=pr_number,
         )
     except (GitError, ChangedLiteralsError) as exc:
         print(f"impact job {job_id} failed ({type(exc).__name__}): {exc}")
@@ -101,8 +103,8 @@ def create_job(
     test_repo: str,
     test_ref: str,
     literals_repo: str,
-    base_ref: str,
-    updated_ref: str,
+    base_ref: str | None,
+    updated_ref: str | None,
     min_removal_confidence: float,
     min_literal_match_confidence: float,
     match_method: MatchMethod,
@@ -110,6 +112,7 @@ def create_job(
     invocation_max_length: int,
     extra_cases_allowed: int | None,
     missing_cases_allowed: int | None,
+    pr_number: int | None = None,
 ) -> tuple[ImpactJob, threading.Thread]:
     """Register a new pending job and return it together with its (not-yet-started)
     worker thread. The caller should snapshot whatever response it wants to build from
@@ -138,6 +141,7 @@ def create_job(
             invocation_max_length,
             extra_cases_allowed,
             missing_cases_allowed,
+            pr_number,
         ),
         daemon=True,
     )

@@ -402,3 +402,24 @@ def test_tag_allowances_are_applied_to_the_recommendation(monkeypatch):
     assert result["recommended_invocations"]["commands"] == ["/test-e2e cucu --tags=smoke"]
     assert result["recommended_invocations"]["structured"][0]["extra_cases"] == []
     assert result["findings"][0]["matched_test_literals"][0]["case_id"] == 1234  # findings unaffected
+
+
+def test_pr_number_is_passed_through_and_resolved_refs_are_reported(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef")
+    _stub_changed_literals(monkeypatch, [])
+    created = {}
+
+    def create_job(repo, base, updated, **kwargs):
+        created.update(repo=repo, base=base, updated=updated, **kwargs)
+        return {"job_id": "job-1"}
+
+    monkeypatch.setattr(cl_client, "create_job", create_job)
+    monkeypatch.setattr(
+        cl_client, "get_job_status", lambda job_id, **k: {"status": "done", "base": "basesha", "updated": "headsha"}
+    )
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", None, None, pr_number=9)
+
+    assert created == {"repo": "product-repo", "base": None, "updated": None, "pr_number": 9}
+    assert (result["base_ref"], result["updated_ref"], result["pr_number"]) == ("basesha", "headsha", 9)

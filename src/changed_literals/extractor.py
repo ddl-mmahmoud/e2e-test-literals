@@ -46,7 +46,10 @@ def _extract_from_repo(
     languages: set[str] | None,
     *,
     force_fetch: bool,
+    pull_request: int | None,
 ) -> list[Finding]:
+    if pull_request is not None:
+        git_ops.fetch_pull_head(repo_dir, pull_request)
     git_ops.fetch_refs(repo_dir, [base_ref, updated_ref], force=force_fetch)
 
     diff_text = git_ops.diff_unified0(repo_dir, base_ref, updated_ref, pathspecs_for(languages))
@@ -69,8 +72,12 @@ def extract(
     updated_ref: str,
     languages: set[str] | None = None,
     repo_cache: Path | None = None,
+    pull_request: int | None = None,
 ) -> list[Finding]:
     """Run the pipeline against repo_url.
+
+    `pull_request` names the GitHub PR that `updated_ref` (its head SHA) belongs to, so
+    that commit is fetched via `refs/pull/<n>/head` -- it may live only in a fork.
 
     With `repo_cache`, a bare clone is created there on first use and reused
     on every later call instead of being re-cloned -- and never cleaned up,
@@ -80,9 +87,9 @@ def extract(
     """
     if repo_cache is not None:
         git_ops.ensure_repo_cache(repo_url, repo_cache)
-        return _extract_from_repo(repo_cache, base_ref, updated_ref, languages, force_fetch=True)
+        return _extract_from_repo(repo_cache, base_ref, updated_ref, languages, force_fetch=True, pull_request=pull_request)
 
     with tempfile.TemporaryDirectory(prefix="changed-literals-") as tmp:
         repo_dir = Path(tmp) / "repo"
         git_ops.clone(repo_url, repo_dir)
-        return _extract_from_repo(repo_dir, base_ref, updated_ref, languages, force_fetch=False)
+        return _extract_from_repo(repo_dir, base_ref, updated_ref, languages, force_fetch=False, pull_request=pull_request)
