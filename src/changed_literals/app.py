@@ -18,9 +18,11 @@ rather than one endpoint that blocks the caller until it's done:
              -> job status: pending | running | done | error. Once the refs are known
                 (immediately, or after a "pr" is resolved) it also carries the "base"
                 and "updated" they resolved to. "phase" names what the job is doing
-                (queued | resolving_pull_request | fetching_literals_repo |
-                analyzing_literals_diff | done | error), and "profiling" how long each
-                phase has taken (see profiling.py), including which caches it hit.
+                (queued | resolving_pull_request | checking_findings_cache |
+                fetching_literals_repo | analyzing_literals_diff | done | error), and
+                "profiling" how long each phase has taken (see profiling.py), including
+                which cache it consulted. A findings cache hit ends the job after
+                checking_findings_cache; the two phases after it only run on a miss.
 
   GET /changed-literals/jobs/<job_id>/result
              [?offset=0&limit=200]
@@ -92,8 +94,7 @@ from changed_literals.git_ops import GitError
 from changed_literals.github import resolve_pull_request
 from changed_literals.languages import PATHSPECS
 from changed_literals.profiling import (
-    ANALYZING_LITERALS_DIFF,
-    FETCHING_LITERALS_REPO,
+    CHECKING_FINDINGS_CACHE,
     PHASES,
     RESOLVING_PULL_REQUEST,
     PhaseTracker,
@@ -176,20 +177,18 @@ def _cached_findings(
 ) -> list[Finding]:
     key = _cache_key(repo, base, updated, languages)
 
-    findings_cache = "bypassed"
-    if not force_refresh:
-        with _cache_lock:
-            entry = _cache.get(key)
-        if entry is not None and time.time() - entry["computed_at"] < CACHE_TTL_SECONDS:
-            if tracker is not None:
-                # Both phases were covered by the cached result.
-                tracker.skip(FETCHING_LITERALS_REPO, findings="hit")
-                tracker.skip(ANALYZING_LITERALS_DIFF, findings="hit")
-            return entry["findings"]
-        findings_cache = "miss" if entry is None else "expired"
+    with track(tracker, CHECKING_FINDINGS_CACHE) as phase:
+        outcome = "bypassed"
+        if not force_refresh:
+            with _cache_lock:
+                entry = _cache.get(key)
+            if entry is not None and time.time() - entry["computed_at"] < CACHE_TTL_SECONDS:
+                phase.caches["findings"] = "hit"
+                # The cached result covers the repo fetch and the analysis too, so neither runs.
+                return entry["findings"]
+            outcome = "miss" if entry is None else "expired"
+        phase.caches["findings"] = outcome
 
-    if tracker is not None:
-        tracker.ambient_caches["findings"] = findings_cache
     findings = extract(
         repo,
         base,

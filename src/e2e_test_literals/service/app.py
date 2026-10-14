@@ -73,8 +73,8 @@ it's done -- mirrors changed-literals' app.py:
              -> same job-status/result shape as /revisions/jobs/<job_id>[/result], except that
                 the status also says what the job is doing and how long each part has taken:
                 "phase" (queued | resolving_test_revision | populating_test_db |
-                loading_test_literals | resolving_pull_request | fetching_literals_repo |
-                analyzing_literals_diff | matching_literals | computing_invocations |
+                loading_test_literals | resolving_pull_request | checking_findings_cache |
+                fetching_literals_repo | analyzing_literals_diff | matching_literals | computing_invocations |
                 optimizing_invocation_tags | done | error) and "profiling": {"total_seconds",
                 "phases": {<phase>: null if not run (yet), else {"state": running | done |
                 failed, "seconds", "caches": {<cache>: hit | miss | expired | invalidated |

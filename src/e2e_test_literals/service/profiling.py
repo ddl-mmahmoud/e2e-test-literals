@@ -32,10 +32,11 @@ from typing import Iterator, Sequence
 RESOLVING_TEST_REVISION = "resolving_test_revision"  # fetch the test repo's ref, resolve it to a sha
 POPULATING_TEST_DB = "populating_test_db"  # build the sha's literal db, unless it is already built
 LOADING_TEST_LITERALS = "loading_test_literals"
-# The next three are changed-literals' own phases, adopted from its job status.
+# The next four are changed-literals' own phases, adopted from its job status.
 RESOLVING_PULL_REQUEST = "resolving_pull_request"  # only for a job named by `pr_number`
-FETCHING_LITERALS_REPO = "fetching_literals_repo"
-ANALYZING_LITERALS_DIFF = "analyzing_literals_diff"
+CHECKING_FINDINGS_CACHE = "checking_findings_cache"  # reuse an earlier result for the same diff, if any
+FETCHING_LITERALS_REPO = "fetching_literals_repo"  # only after a findings cache miss
+ANALYZING_LITERALS_DIFF = "analyzing_literals_diff"  # only after a findings cache miss
 MATCHING_LITERALS = "matching_literals"  # collect its findings, match them against the test literals
 COMPUTING_INVOCATIONS = "computing_invocations"
 OPTIMIZING_INVOCATION_TAGS = "optimizing_invocation_tags"  # only when tag substitution is asked for
@@ -44,6 +45,7 @@ PHASES = (
     POPULATING_TEST_DB,
     LOADING_TEST_LITERALS,
     RESOLVING_PULL_REQUEST,
+    CHECKING_FINDINGS_CACHE,
     FETCHING_LITERALS_REPO,
     ANALYZING_LITERALS_DIFF,
     MATCHING_LITERALS,
@@ -76,8 +78,8 @@ class PhaseTracker:
         self._started = time.monotonic()
         self._finished: float | None = None
         self.current: str | None = None
-        # Applied to every phase that starts from now on, for a cache consulted before the
-        # phases it affects begin (see app.py's findings cache).
+        # Applied to every phase that starts from now on. Unused for now: each cache is
+        # reported by the one phase that consults it (see the module docstring).
         self.ambient_caches: dict[str, str] = {}
 
     @contextlib.contextmanager

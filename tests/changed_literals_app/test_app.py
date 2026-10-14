@@ -161,16 +161,11 @@ _JOB = {"repo": "r", "base": "b", "updated": "u"}
 def _findings_cache_outcome(**kwargs) -> str:
     tracker = PhaseTracker(PHASES)
     app._cached_findings("repo", "base", "upd", None, tracker=tracker, **kwargs)
-    return tracker.snapshot()["phases"]["fetching_literals_repo"]["caches"]["findings"]
+    return tracker.snapshot()["phases"]["checking_findings_cache"]["caches"]["findings"]
 
 
 def test_cached_findings_reports_the_findings_cache_outcome(monkeypatch):
-    def fake_extract(*a, tracker=None, **k):
-        with tracker.phase("fetching_literals_repo"):
-            pass
-        return []
-
-    monkeypatch.setattr(app, "extract", fake_extract)
+    monkeypatch.setattr(app, "extract", lambda *a, **k: [])
     monkeypatch.setattr(app, "CACHE_TTL_SECONDS", 0.05)
 
     assert _findings_cache_outcome(force_refresh=False) == "miss"
@@ -180,7 +175,7 @@ def test_cached_findings_reports_the_findings_cache_outcome(monkeypatch):
     assert _findings_cache_outcome(force_refresh=True) == "bypassed"
 
 
-def test_a_findings_cache_hit_skips_both_phases(monkeypatch):
+def test_a_findings_cache_hit_runs_neither_repo_phase(monkeypatch):
     monkeypatch.setattr(app, "extract", lambda *a, **k: [])
     app._cached_findings("repo", "base", "upd", None, force_refresh=False)
 
@@ -188,9 +183,30 @@ def test_a_findings_cache_hit_skips_both_phases(monkeypatch):
     app._cached_findings("repo", "base", "upd", None, force_refresh=False, tracker=tracker)
 
     phases = tracker.snapshot()["phases"]
-    for name in ("fetching_literals_repo", "analyzing_literals_diff"):
-        assert phases[name] == {"state": "done", "seconds": 0.0, "caches": {"findings": "hit"}}
+    assert phases["checking_findings_cache"]["state"] == "done"
+    assert phases["checking_findings_cache"]["caches"] == {"findings": "hit"}
+    assert phases["fetching_literals_repo"] is None
+    assert phases["analyzing_literals_diff"] is None
     assert phases["resolving_pull_request"] is None
+    assert tracker.current == "checking_findings_cache"
+
+
+def test_the_findings_cache_is_reported_only_by_its_own_phase(monkeypatch):
+    def fake_extract(*a, tracker=None, **k):
+        with tracker.phase("fetching_literals_repo") as phase:
+            phase.caches["repo_clone"] = "miss"
+        with tracker.phase("analyzing_literals_diff"):
+            pass
+        return []
+
+    monkeypatch.setattr(app, "extract", fake_extract)
+    tracker = PhaseTracker(PHASES)
+    app._cached_findings("repo", "base", "upd", None, force_refresh=False, tracker=tracker)
+
+    phases = tracker.snapshot()["phases"]
+    assert phases["checking_findings_cache"]["caches"] == {"findings": "miss"}
+    assert phases["fetching_literals_repo"]["caches"] == {"repo_clone": "miss"}
+    assert "caches" not in phases["analyzing_literals_diff"]
 
 
 def test_job_status_reports_phase_and_profiling_when_done(monkeypatch):
@@ -208,7 +224,8 @@ def test_job_status_reports_phase_and_profiling_when_done(monkeypatch):
     assert body["profiling"]["total_seconds"] >= 0
     phases = body["profiling"]["phases"]
     assert phases["resolving_pull_request"] is None
-    assert phases["fetching_literals_repo"]["caches"] == {"findings": "miss", "repo_clone": "hit"}
+    assert phases["checking_findings_cache"]["caches"] == {"findings": "miss"}
+    assert phases["fetching_literals_repo"]["caches"] == {"repo_clone": "hit"}
     assert phases["analyzing_literals_diff"]["state"] == "done"
 
 
@@ -260,8 +277,9 @@ def test_a_real_job_profiles_the_repo_fetch_and_diff_analysis(tmp_path, monkeypa
 
     first, second = phases_of_a_job(), phases_of_a_job()
 
-    assert first["fetching_literals_repo"]["caches"] == {"findings": "bypassed", "repo_clone": "miss"}
-    assert second["fetching_literals_repo"]["caches"] == {"findings": "bypassed", "repo_clone": "hit"}
+    assert first["checking_findings_cache"]["caches"] == {"findings": "bypassed"}
+    assert first["fetching_literals_repo"]["caches"] == {"repo_clone": "miss"}
+    assert second["fetching_literals_repo"]["caches"] == {"repo_clone": "hit"}
     assert first["analyzing_literals_diff"]["state"] == "done"
 
 

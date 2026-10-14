@@ -534,7 +534,8 @@ def _running_then_done_status(monkeypatch) -> None:
                 "profiling": {
                     "phases": {
                         "resolving_pull_request": None,
-                        "fetching_literals_repo": {"state": "running", "seconds": 0.5, "caches": {"findings": "miss"}},
+                        "checking_findings_cache": {"state": "done", "seconds": 0.0, "caches": {"findings": "miss"}},
+                        "fetching_literals_repo": {"state": "running", "seconds": 0.5, "caches": {"repo_clone": "hit"}},
                         "analyzing_literals_diff": None,
                     }
                 },
@@ -545,12 +546,9 @@ def _running_then_done_status(monkeypatch) -> None:
                 "profiling": {
                     "phases": {
                         "resolving_pull_request": None,
-                        "fetching_literals_repo": {
-                            "state": "done",
-                            "seconds": 2.0,
-                            "caches": {"findings": "miss", "repo_clone": "hit"},
-                        },
-                        "analyzing_literals_diff": {"state": "done", "seconds": 3.0, "caches": {"findings": "miss"}},
+                        "checking_findings_cache": {"state": "done", "seconds": 0.0, "caches": {"findings": "miss"}},
+                        "fetching_literals_repo": {"state": "done", "seconds": 2.0, "caches": {"repo_clone": "hit"}},
+                        "analyzing_literals_diff": {"state": "done", "seconds": 3.0},
                     }
                 },
             },
@@ -571,17 +569,45 @@ def test_tracker_gets_every_phase_of_the_job_with_changed_literals_phases_adopte
 
     phases = tracker.snapshot()["phases"]
     assert phases["loading_test_literals"]["state"] == "done"
-    assert phases["fetching_literals_repo"] == {
-        "state": "done",
-        "seconds": 2.0,
-        "caches": {"findings": "miss", "repo_clone": "hit"},
-    }
+    assert phases["checking_findings_cache"]["caches"] == {"findings": "miss"}
+    assert phases["fetching_literals_repo"] == {"state": "done", "seconds": 2.0, "caches": {"repo_clone": "hit"}}
     assert phases["analyzing_literals_diff"]["seconds"] == 3.0
     assert phases["matching_literals"]["state"] == "done"
     assert phases["computing_invocations"]["state"] == "done"
     # Not asked for, so never run (as is the pull request lookup for a job naming its refs).
     assert phases["optimizing_invocation_tags"] is None
     assert phases["resolving_pull_request"] is None
+
+
+def test_a_findings_cache_hit_leaves_the_repo_phases_unrun(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
+    _write_test_db("deadbeef")
+    _stub_changed_literals(monkeypatch, [_finding()])
+    monkeypatch.setattr(
+        cl_client,
+        "get_job_status",
+        lambda job_id, **k: {
+            "status": "done",
+            "phase": "done",
+            "profiling": {
+                "phases": {
+                    "resolving_pull_request": None,
+                    "checking_findings_cache": {"state": "done", "seconds": 0.0, "caches": {"findings": "hit"}},
+                    "fetching_literals_repo": None,
+                    "analyzing_literals_diff": None,
+                }
+            },
+        },
+    )
+    tracker = PhaseTracker(PHASES)
+
+    impact.compute_impact("test-repo", "main", "product-repo", "base", "updated", tracker=tracker)
+
+    phases = tracker.snapshot()["phases"]
+    assert phases["checking_findings_cache"]["caches"] == {"findings": "hit"}
+    assert phases["fetching_literals_repo"] is None
+    assert phases["analyzing_literals_diff"] is None
+    assert phases["matching_literals"]["state"] == "done"
 
 
 def test_tag_substitution_is_its_own_phase_when_asked_for(monkeypatch):

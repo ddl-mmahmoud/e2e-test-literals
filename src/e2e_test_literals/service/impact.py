@@ -19,7 +19,7 @@ from . import changed_literals_client as cl_client
 from .generation import db_path, resolve_and_generate
 from .invocations import DEFAULT_MAX_LENGTH as DEFAULT_INVOCATION_MAX_LENGTH
 from .invocations import recommend_invocations
-from .profiling import FETCHING_LITERALS_REPO, LOADING_TEST_LITERALS, MATCHING_LITERALS, PhaseTracker, track
+from .profiling import CHECKING_FINDINGS_CACHE, LOADING_TEST_LITERALS, MATCHING_LITERALS, PhaseTracker, track
 from .replacements import attach_replacements, cancel_unchanged
 
 DEFAULT_MIN_REMOVAL_CONFIDENCE = 0.85
@@ -212,7 +212,7 @@ def compute_impact(
     if tracker is not None:
         # changed-literals' own phases are adopted from its status; this covers the moment
         # before the first poll lands.
-        tracker.current = FETCHING_LITERALS_REPO
+        tracker.current = CHECKING_FINDINGS_CACHE
     status = _poll_changed_literals_job(created["job_id"], tracker)
     if status["status"] == "error":
         error = status.get("error") or "changed-literals job failed"

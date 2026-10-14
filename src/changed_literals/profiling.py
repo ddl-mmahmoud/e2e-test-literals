@@ -7,14 +7,19 @@ other, the same way `git_ops.py` / `repo_checkout.py` are.
 A job's status body carries `PhaseTracker.snapshot()`:
 
     {"total_seconds": 4.2,
-     "phases": {"fetching_literals_repo": {"state": "done", "seconds": 1.1,
-                                           "caches": {"repo_clone": "hit", "findings": "miss"}},
-                "analyzing_literals_diff": {"state": "running", "seconds": 3.1, "caches": {...}},
-                ...,
+     "phases": {"checking_findings_cache": {"state": "done", "seconds": 0.0,
+                                            "caches": {"findings": "miss"}},
+                "fetching_literals_repo": {"state": "done", "seconds": 1.1,
+                                           "caches": {"repo_clone": "hit"}},
+                "analyzing_literals_diff": {"state": "running", "seconds": 3.1},
                 "resolving_pull_request": None}}
 
-A phase that has not started (or never runs for this job) is `None`. A running phase reports
+A phase that has not started (or never runs for this job) is `None` -- after a findings cache
+hit, that is both `fetching_literals_repo` and `analyzing_literals_diff`. A running phase reports
 the time it has taken so far.
+
+Each durable cache is reported by exactly one phase, the one that consults it: `findings` by
+`checking_findings_cache`, `repo_clone` by `fetching_literals_repo`.
 
 `caches` names every cache a phase consulted and what it did: "hit", "miss", "expired" (the
 entry was there but too old), "invalidated" (the entry was there but unusable), "bypassed"
@@ -31,9 +36,10 @@ from typing import Iterator, Sequence
 
 
 RESOLVING_PULL_REQUEST = "resolving_pull_request"  # only for a job named by "pr"
-FETCHING_LITERALS_REPO = "fetching_literals_repo"
-ANALYZING_LITERALS_DIFF = "analyzing_literals_diff"
-PHASES = (RESOLVING_PULL_REQUEST, FETCHING_LITERALS_REPO, ANALYZING_LITERALS_DIFF)
+CHECKING_FINDINGS_CACHE = "checking_findings_cache"  # reuse an earlier result for the same diff, if any
+FETCHING_LITERALS_REPO = "fetching_literals_repo"  # only after a findings cache miss
+ANALYZING_LITERALS_DIFF = "analyzing_literals_diff"  # only after a findings cache miss
+PHASES = (RESOLVING_PULL_REQUEST, CHECKING_FINDINGS_CACHE, FETCHING_LITERALS_REPO, ANALYZING_LITERALS_DIFF)
 
 
 @dataclasses.dataclass
@@ -60,8 +66,8 @@ class PhaseTracker:
         self._started = time.monotonic()
         self._finished: float | None = None
         self.current: str | None = None
-        # Applied to every phase that starts from now on, for a cache consulted before the
-        # phases it affects begin (see app.py's findings cache).
+        # Applied to every phase that starts from now on. Unused for now: each cache is
+        # reported by the one phase that consults it (see the module docstring).
         self.ambient_caches: dict[str, str] = {}
 
     @contextlib.contextmanager
