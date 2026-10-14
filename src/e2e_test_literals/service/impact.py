@@ -2,7 +2,8 @@
 CHANGED-LITERALS-IMPACT-PLAN.md): ensure the test repo's revision is built, ask
 changed-literals to diff two refs of a (possibly different) target repo, then check
 which of its REMOVED findings -- at or above a confidence floor -- contain a literal
-this test revision actually depends on.
+this test revision actually depends on. Added findings ride along so each removal can be
+paired with what replaced it (`replacements.py`).
 
 This is the "actual work" counterpart to `impact_jobs.py`'s job-state-machine wrapper,
 the same split `generation.py`/`jobs.py` use for revision builds.
@@ -18,6 +19,7 @@ from . import changed_literals_client as cl_client
 from .generation import db_path, resolve_and_generate
 from .invocations import DEFAULT_MAX_LENGTH as DEFAULT_INVOCATION_MAX_LENGTH
 from .invocations import recommend_invocations
+from .replacements import attach_replacements
 
 DEFAULT_MIN_REMOVAL_CONFIDENCE = 0.85
 # Default 0.0: every case a removed finding matched gets an invocation.
@@ -140,6 +142,7 @@ def _case_ids_for_invocations(findings: list[dict], min_invocation_confidence: f
         {
             literal["case_id"]
             for finding in findings
+            if finding["change"] == "removed"
             for literal in finding["matched_test_literals"]
             if min(finding["confidence"], literal["match_confidence"]) >= min_invocation_confidence
         }
@@ -163,12 +166,15 @@ def compute_impact(
     """The actual unit of work for a `POST /changed-literals-impact` job (see
     impact_jobs.py). Runs on the job's own worker thread; nothing here is async.
 
-    Only `change == "removed"` findings at or above `min_removal_confidence` are
-    returned -- this is a *second*, client-side filter on top of changed-literals' own
-    internal floor of 0.3 (it never returns anything below that), not a replacement for
-    it. Each returned finding is annotated with `matched_test_literals` (possibly
-    empty) rather than only including findings that actually matched, so a caller can
-    see exactly which removed-and-confident findings were checked. `matched_test_literals`
+    `findings` holds every detected change: the `change == "removed"` ones at or above
+    `min_removal_confidence` -- this is a *second*, client-side filter on top of
+    changed-literals' own internal floor of 0.3 (it never returns anything below that), not
+    a replacement for it -- plus all `"added"` ones, which can't break a test but are the
+    candidates for what a removed string became. Each removed finding is annotated with
+    `matched_test_literals` (possibly empty) rather than only including findings that
+    actually matched, so a caller can see exactly which removed-and-confident findings were
+    checked, and with `replacements` (see `replacements.attach_replacements`). `total` counts
+    every finding. A removed finding's `matched_test_literals`
     entries are only those at or above `min_literal_match_confidence` under the match
     algorithm their literal's `string_kind` calls for (see `_match_literals`).
 
@@ -199,10 +205,12 @@ def compute_impact(
 
     findings = []
     for finding in _fetch_all_findings(created["job_id"]):
-        if finding["change"] != "removed" or finding["confidence"] < min_removal_confidence:
-            continue
-        matched = _match_literals(finding["text"], test_literals, min_literal_match_confidence)
-        findings.append({**finding, "matched_test_literals": matched})
+        if finding["change"] != "removed":
+            findings.append(finding)  # a candidate replacement; see attach_replacements
+        elif finding["confidence"] >= min_removal_confidence:
+            matched = _match_literals(finding["text"], test_literals, min_literal_match_confidence)
+            findings.append({**finding, "matched_test_literals": matched})
+    findings = attach_replacements(findings)
 
     return {
         "test_repo": test_repo,

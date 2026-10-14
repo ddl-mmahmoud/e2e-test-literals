@@ -70,3 +70,16 @@ def test_deleted_file_has_no_added_lines():
 def test_no_hunks_means_no_files():
     text = "diff --git a/x b/x\nindex a..b 100644\n--- a/x\n+++ b/x\n"
     assert parse_diff(text) == []
+
+
+def test_each_hunk_gets_its_own_index_for_removed_and_added_lines():
+    f = parse_diff(MODIFIED_DIFF)[0]
+    assert f.removed_hunks == {10: 0}
+    assert f.added_hunks == {10: 0, 21: 1, 22: 1}
+
+
+def test_a_replacement_hunk_shares_one_index_on_both_sides():
+    text = "diff --git a/x.tsx b/x.tsx\n--- a/x.tsx\n+++ b/x.tsx\n@@ -3,2 +3,3 @@\n-a\n-b\n+a2\n+b2\n+c2\n"
+    f = parse_diff(text)[0]
+    assert f.removed_hunks == {3: 0, 4: 0}
+    assert f.added_hunks == {3: 0, 4: 0, 5: 0}

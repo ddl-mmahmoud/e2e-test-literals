@@ -26,14 +26,28 @@ def _process_file(
         base_blob = git_ops.show_blob(repo_dir, base_ref, diff_file.path)
         if base_blob is not None:
             findings.extend(
-                collect_findings(base_blob, adapter, diff_file.removed_lines, "removed", diff_file.path)
+                collect_findings(
+                    base_blob,
+                    adapter,
+                    diff_file.removed_lines,
+                    "removed",
+                    diff_file.path,
+                    hunk_of_line=diff_file.removed_hunks,
+                )
             )
 
     if not diff_file.is_deleted_file and diff_file.added_lines:
         updated_blob = git_ops.show_blob(repo_dir, updated_ref, diff_file.path)
         if updated_blob is not None:
             findings.extend(
-                collect_findings(updated_blob, adapter, diff_file.added_lines, "added", diff_file.path)
+                collect_findings(
+                    updated_blob,
+                    adapter,
+                    diff_file.added_lines,
+                    "added",
+                    diff_file.path,
+                    hunk_of_line=diff_file.added_hunks,
+                )
             )
 
     return findings

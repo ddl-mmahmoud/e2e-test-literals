@@ -182,3 +182,149 @@ def test_impact_request_accepts_pr_number_in_place_of_refs(impact_client: TestCl
     assert _await_job(impact_client, resp.json()["job_id"])["status"] == "done"
     assert seen["args"][3:5] == (None, None)
     assert seen["kwargs"]["pr_number"] == 3
+
+
+def _report_result() -> dict:
+    literal = {
+        "value": "Access",
+        "string_kind": "link",
+        "case_id": 771386,
+        "scenario_name": "Check links",
+        "source_file": "tests/a.feature",
+        "source_line": 63,
+        "step_text": 'I click the link "Access"',
+        "tags": ["testrail(771386)"],
+        "match_algorithm": "exact",
+        "match_confidence": 1.0,
+    }
+    finding = {
+        "file": "views/</script>.html",
+        "line": 45,
+        "column": 3,
+        "text": "Access",
+        "context": "html-text",
+        "confidence": 0.9,
+        "change": "removed",
+        "hunk": 0,
+        "matched_test_literals": [literal],
+        "replacements": [],
+    }
+    return {
+        "test_repo": "https://github.com/o/tests",
+        "test_sha": "a" * 40,
+        "literals_repo": "https://github.com/o/product",
+        "base_ref": "b" * 40,
+        "updated_ref": "c" * 40,
+        "pr_number": None,
+        "min_invocation_confidence": 0.0,
+        "invocation_max_length": 300,
+        "extra_cases_allowed": None,
+        "missing_cases_allowed": None,
+        "total": 1,
+        "findings": [finding],
+        "recommended_invocations": {"commands": [], "structured": [], "uncovered": [], "warnings": []},
+    }
+
+
+def _finished_job(client: TestClient, monkeypatch, result: dict) -> str:
+    monkeypatch.setattr(impact_jobs, "compute_impact", lambda *a, **k: result)
+    job_id = client.post("/changed-literals-impact", json=_REQUEST_BODY).json()["job_id"]
+    assert _await_job(client, job_id)["status"] == "done"
+    return job_id
+
+
+def test_report_param_serves_the_html_report_and_plain_result_stays_json(impact_client: TestClient, monkeypatch):
+    result = _report_result()
+    job_id = _finished_job(impact_client, monkeypatch, result)
+
+    report = impact_client.get(f"/changed-literals-impact/jobs/{job_id}/result?report=1")
+    plain = impact_client.get(f"/changed-literals-impact/jobs/{job_id}/result")
+
+    assert report.status_code == 200
+    assert report.headers["content-type"].startswith("text/html")
+    assert "report-data" in report.text
+    # The file name that tried to close the script element is embedded escaped.
+    assert "</script>.html" not in report.text
+    assert plain.json() == result
+
+    # report=0 is the JSON again.
+    assert impact_client.get(f"/changed-literals-impact/jobs/{job_id}/result?report=0").json() == result
+
+
+def test_report_is_409_while_the_job_is_pending(impact_client: TestClient, monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(impact_jobs, "compute_impact", lambda *a, **k: release.wait(5) and {"total": 0, "findings": []})
+    job_id = impact_client.post("/changed-literals-impact", json=_REQUEST_BODY).json()["job_id"]
+    try:
+        assert impact_client.get(f"/changed-literals-impact/jobs/{job_id}/result?report=1").status_code == 409
+    finally:
+        release.set()
+        _await_job(impact_client, job_id)
+
+
+@pytest.fixture
+def routed_db(tmp_path, monkeypatch):
+    from e2e_test_literals.db import write_sqlite
+    from e2e_test_literals.service import config
+
+    monkeypatch.setattr(config, "DB_DIR", tmp_path / "db")
+    config.DB_DIR.mkdir(parents=True)
+
+    def entry(case_id: int) -> dict:
+        return {
+            "case_id": case_id,
+            "domain": "ui",
+            "file": "tests/ui/features/example.feature",
+            "name": f"Case {case_id}",
+            "root": "domino",
+            "labels": [["tag", "smoke"]],
+            "candidates": [{"test_type": "cucu", "flags": []}],
+        }
+
+    cases = {
+        case_id: {
+            "scenarios": [{"feature_file": "tests/ui/features/example.feature", "scenario_name": f"Case {case_id}", "tags": ["smoke"]}],
+            "literals": [],
+            "patterns": [],
+        }
+        for case_id in (1, 2)
+    }
+    write_sqlite(cases, config.DB_DIR / "deadbeef.sqlite", routing=[entry(1), entry(2)])
+
+
+def test_invocations_are_recomputed_for_just_the_given_cases(impact_client: TestClient, routed_db):
+    resp = impact_client.post(
+        "/changed-literals-impact/invocations", json={"test_sha": "deadbeef", "case_ids": [2], "invocation_max_length": 300}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["commands"] == ["/test-e2e cucu --tags=testrail(2)"]
+
+
+def test_invocations_for_no_cases_are_empty(impact_client: TestClient, routed_db):
+    resp = impact_client.post("/changed-literals-impact/invocations", json={"test_sha": "deadbeef", "case_ids": []})
+
+    assert resp.json() == {"commands": [], "structured": [], "uncovered": [], "warnings": []}
+
+
+def test_invocations_honor_tag_allowances(impact_client: TestClient, routed_db):
+    resp = impact_client.post(
+        "/changed-literals-impact/invocations",
+        json={"test_sha": "deadbeef", "case_ids": [1, 2], "extra_cases_allowed": 0},
+    )
+
+    assert resp.json()["commands"] == ["/test-e2e cucu --tags=smoke"]
+
+
+def test_invocations_404_for_a_revision_that_is_not_built(impact_client: TestClient, routed_db):
+    resp = impact_client.post("/changed-literals-impact/invocations", json={"test_sha": "abc1234", "case_ids": [1]})
+
+    assert resp.status_code == 404
+    assert "run the impact check again" in resp.json()["detail"]
+
+
+@pytest.mark.parametrize("test_sha", ["../../etc/passwd", "DEADBEEF", "", "dead beef"])
+def test_invocations_reject_a_test_sha_that_is_not_a_plain_hex_sha(impact_client: TestClient, test_sha):
+    resp = impact_client.post("/changed-literals-impact/invocations", json={"test_sha": test_sha, "case_ids": [1]})
+
+    assert resp.status_code == 422

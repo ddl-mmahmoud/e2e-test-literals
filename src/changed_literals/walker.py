@@ -23,6 +23,7 @@ def collect_findings(
     change: Change,
     report_path: str,
     min_confidence: float = DEFAULT_MIN_CONFIDENCE,
+    hunk_of_line: dict[int, int] | None = None,
 ) -> list[Finding]:
     if adapter.preprocess is not None:
         source = adapter.preprocess(source)
@@ -41,6 +42,13 @@ def collect_findings(
             # literal defined outside the diff back to a changed usage site.
             touches_diff = any(line in target_lines for line in range(start_line, end_line + 1))
             if touches_diff:
+                # A literal spanning several hunks belongs to the first one it touches.
+                hunk = None
+                if hunk_of_line is not None:
+                    hunk = min(
+                        (hunk_of_line[line] for line in range(start_line, end_line + 1) if line in hunk_of_line),
+                        default=None,
+                    )
                 for raw_text in texts:
                     result = adapter.classify(node, raw_text)
                     if result is not None and result.confidence >= min_confidence:
@@ -53,6 +61,7 @@ def collect_findings(
                                 context=result.context,
                                 confidence=round(result.confidence, 2),
                                 change=change,
+                                hunk=hunk,
                             )
                         )
             # `texts` (even if empty) means this node is a literal-shaped

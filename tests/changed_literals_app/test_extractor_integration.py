@@ -226,3 +226,38 @@ def test_pull_request_head_not_on_any_branch_is_fetched_via_pull_ref(tmp_path: P
 
     assert {f.text for f in findings if f.change == "removed"} == {"Old greeting"}
     assert {f.text for f in findings if f.change == "added"} == {"New greeting"}
+
+
+def test_findings_of_one_edit_share_a_hunk_and_separate_edits_do_not(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "config", "user.email", "test@example.com")
+    _git(repo, "config", "user.name", "Test")
+
+    filler = "".join(f"const unchanged{i} = {i};\n" for i in range(10))
+    _write(
+        repo,
+        "src/Widget.tsx",
+        f'function A() {{ return <div>First old text</div>; }}\n{filler}'
+        'function B() { return <div>Second old text</div>; }\n',
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "--quiet", "-m", "base")
+    base_sha = _head(repo)
+
+    _write(
+        repo,
+        "src/Widget.tsx",
+        f'function A() {{ return <div>First new text</div>; }}\n{filler}'
+        'function B() { return <div>Second new text</div>; }\n',
+    )
+    _git(repo, "add", ".")
+    _git(repo, "commit", "--quiet", "-m", "updated")
+
+    findings = extract(str(repo), base_sha, _head(repo))
+    hunk = {(f.change, f.text): f.hunk for f in findings}
+
+    assert hunk[("removed", "First old text")] == hunk[("added", "First new text")]
+    assert hunk[("removed", "Second old text")] == hunk[("added", "Second new text")]
+    assert hunk[("removed", "First old text")] != hunk[("removed", "Second old text")]

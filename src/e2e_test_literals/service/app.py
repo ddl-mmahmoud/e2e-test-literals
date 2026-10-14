@@ -69,7 +69,18 @@ it's done -- mirrors changed-literals' app.py:
                 met, plain tags are returned with an explanation in `warnings`.
 
   GET /changed-literals-impact/jobs/<job_id>[/result]
-             -> same job-status/result shape as /revisions/jobs/<job_id>[/result].
+             -> same job-status/result shape as /revisions/jobs/<job_id>[/result]. The result
+                holds every detected change (removed findings annotated with their matched
+                test literals and `replacements`, added ones as they are). With
+                `/result?report=1` it is served as the HTML impact report instead
+                (report_page.py).
+
+  POST /changed-literals-impact/invocations
+             body: {"test_sha": ..., "case_ids": [...], "invocation_max_length": 300,
+                    "extra_cases_allowed": null, "missing_cases_allowed": null}
+             -> the `recommended_invocations` stanza for exactly those cases, from the
+                already-built revision's sqlite alone (404 if it isn't there). What the
+                report page calls when entries are toggled.
 
   <anything>/data/{sha}[.json|.db]?sql=...   the raw arbitrary-SQL endpoint, the db
                                               index, and the raw sqlite download
@@ -106,14 +117,18 @@ from pathlib import Path
 
 import datasette as _datasette_package
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, model_validator
 from starlette.concurrency import run_in_threadpool
 
 from . import config, impact, impact_jobs
+from .generation import db_path
+from .invocations import DEFAULT_MAX_LENGTH as DEFAULT_INVOCATION_MAX_LENGTH
+from .invocations import recommend_invocations
 from .jobs import Job, create_job, get_job, list_active_jobs
 from .pool import pool
 from .proxy import proxy_request
+from .report_page import render_report
 
 DEFAULT_REF = "main"
 
@@ -162,6 +177,17 @@ class ImpactRequest(BaseModel):
         if self.pr_number is not None and (self.base_ref or self.updated_ref):
             raise ValueError("pr_number can't be combined with base_ref/updated_ref")
         return self
+
+
+class InvocationsRequest(BaseModel):
+    """Recompute `recommended_invocations` for a hand-picked set of cases (the report page's
+    toggles) against an already-built test revision."""
+
+    test_sha: str = Field(pattern=r"^[0-9a-f]{7,64}$")  # a db filename: never a path
+    case_ids: list[int]
+    invocation_max_length: int = Field(DEFAULT_INVOCATION_MAX_LENGTH, ge=0)
+    extra_cases_allowed: int | None = Field(None, ge=0)
+    missing_cases_allowed: int | None = Field(None, ge=0)
 
 
 def _job_status_path(job_id: str) -> str:
@@ -315,7 +341,9 @@ def impact_job_status(job_id: str) -> dict:
     return _impact_job_body(_get_impact_job_or_404(job_id))
 
 
-def impact_job_result(job_id: str) -> dict:
+def impact_job_result(job_id: str, report: bool = False):
+    """The job's result as JSON, or -- with `?report=1` -- as the HTML impact report (see
+    report_page.py)."""
     job = _get_impact_job_or_404(job_id)
 
     if job.status in ("pending", "running"):
@@ -327,7 +355,27 @@ def impact_job_result(job_id: str) -> dict:
         raise HTTPException(status_code=500, detail=job.error)
 
     assert job.result is not None  # status == "done" guarantees this
+    if report:
+        return HTMLResponse(render_report(job.result))
     return job.result
+
+
+def impact_invocations(payload: InvocationsRequest) -> dict:
+    """Only reads the revision's sqlite -- no fetch, clone or analysis -- so it is cheap enough
+    to call on every toggle of the report page."""
+    db_file = db_path(payload.test_sha)
+    if not db_file.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"no built test revision {payload.test_sha}; run the impact check again to rebuild it",
+        )
+    return recommend_invocations(
+        db_file,
+        payload.case_ids,
+        max_length=payload.invocation_max_length,
+        extra_cases_allowed=payload.extra_cases_allowed,
+        missing_cases_allowed=payload.missing_cases_allowed,
+    )
 
 
 _SHA_EXTENSIONS = (".json", ".db")
@@ -389,6 +437,7 @@ app.add_api_route("/revisions/jobs/{job_id}/result", revision_job_result, method
 app.add_api_route("/changed-literals-impact", create_impact_job, methods=["POST"], status_code=202)
 app.add_api_route("/changed-literals-impact/jobs/{job_id}", impact_job_status, methods=["GET"])
 app.add_api_route("/changed-literals-impact/jobs/{job_id}/result", impact_job_result, methods=["GET"])
+app.add_api_route("/changed-literals-impact/invocations", impact_invocations, methods=["POST"])
 # Registered before the catch-alls below (Starlette matches routes in registration
 # order): a request for Datasette's shared static-asset namespace would otherwise be
 # swallowed by the sha-based catch-alls, which would treat the leading `-` segment as
@@ -411,6 +460,7 @@ if config.PREFIX != "/":
     app.add_api_route(
         config.PREFIX + "changed-literals-impact/jobs/{job_id}/result", impact_job_result, methods=["GET"]
     )
+    app.add_api_route(config.PREFIX + "changed-literals-impact/invocations", impact_invocations, methods=["POST"])
     app.add_api_route(config.DATA_PREFIX + "-/static/{path:path}", datasette_static_asset, methods=["GET", "HEAD"])
     app.add_api_route(config.DATA_PREFIX + "{sha_and_ext}", proxy_revision_top, methods=_PROXY_METHODS)
     app.add_api_route(config.DATA_PREFIX + "{sha}/{path:path}", proxy_revision, methods=_PROXY_METHODS)

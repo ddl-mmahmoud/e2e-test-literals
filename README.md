@@ -96,12 +96,12 @@ The kind -> algorithm table is `POLICIES` in `step_kinds.py`; an unlisted kind g
   "min_removal_confidence": ..., "min_literal_match_confidence": ...,
   "min_invocation_confidence": ..., "invocation_max_length": ...,
   "extra_cases_allowed": ..., "missing_cases_allowed": ...,   // null when omitted
-  "total": 12,
+  "total": 14,                                          // every finding below, added ones included
   "findings": [
     {
       "file": "...", "line": 42, "column": 9,           // where the string was removed
       "text": "Create Project", "context": "...",
-      "confidence": 0.95, "change": "removed",
+      "confidence": 0.95, "change": "removed", "hunk": 3,
       "matched_test_literals": [
         {
           "value": "Create Project", "string_kind": "button", "match_algorithm": "exact",
@@ -109,8 +109,14 @@ The kind -> algorithm table is `POLICIES` in `step_kinds.py`; an unlisted kind g
           "case_id": 17, "scenario_name": "...", "tags": ["@testrail(1234)"],
           "source_file": "...", "source_line": 8, "step_text": "..."
         }
+      ],
+      "replacements": [      // added strings from the same diff hunk, best first
+        {"file": "...", "line": 42, "column": 9, "text": "Create a Project", "context": "...",
+         "confidence": 0.95, "score": 88.9, "chosen": true}
       ]
-    }
+    },
+    {"file": "...", "line": 42, "column": 9, "text": "Create a Project", "context": "...",
+     "confidence": 0.95, "change": "added", "hunk": 3}
   ],
   "recommended_invocations": {
     "commands": ["/test-e2e nexus --on_prem --flavor=qe-aws-eks --tags=testrail(1234),testrail(5678)"],
@@ -124,9 +130,17 @@ The kind -> algorithm table is `POLICIES` in `step_kinds.py`; an unlisted kind g
 }
 ```
 
-Every removed finding above `min_removal_confidence` is returned, including ones that
-matched nothing: an empty `matched_test_literals` means "checked, no test depends on it".
-Filter on a non-empty list to get the affected cases.
+`findings` holds every detected change. Every *removed* finding above
+`min_removal_confidence` is returned, including ones that matched nothing: an empty
+`matched_test_literals` means "checked, no test depends on it". Filter on
+`change == "removed"` and a non-empty list to get the affected cases. *Added* findings are
+returned too (not held to `min_removal_confidence`, and never matched against tests): they are
+the candidates for what a removed string became. `changed_literals` tags each finding with the
+diff `hunk` it came from, and a removed finding's `replacements` are the added findings of the
+same file and hunk, ranked by text similarity (`score`, 0-100); the one a removed string is
+paired with has `chosen: true` (`service/replacements.py` -- a heuristic: in a hunk with as many
+additions as removals everything is paired, otherwise a pair needs a score of at least 30; and
+no addition replaces two removals).
 
 `recommended_invocations` is the smallest set of `/test-e2e` lines that runs every
 matched case (above `min_invocation_confidence`), in two forms: the command strings, and
@@ -148,6 +162,33 @@ node limit and the selection may not be minimal. The tags come from the per-revi
 is already built, so tuning these two parameters needs no re-index. The logic is ported from
 `map_test_trigger_coverage.py` (`--extra-cases-allowed` / `--missing-cases-allowed`); see
 `service/tag_planning.py`.
+
+### The impact report
+
+Add `?report=1` to the result URL to get the result as an HTML report instead of JSON:
+
+```
+$BASE/changed-literals-impact/jobs/$JOB_ID/result?report=1
+```
+
+For each removed product string that some test step matched, the report lists the feature files
+and steps that may be affected, shows the string's replacement (when one was paired), and links
+to the changed line in the diff, the step at the test revision's SHA in the test repo, and the
+TestRail case (`E2E_TEST_LITERALS_SERVICE_TESTRAIL_URL`, default
+`https://dominodatalab.testrail.io`). Every step has a checkbox, as does each feature file within a
+changed string, and so does each changed string; what is checked drives two panes: the
+`/test-e2e` lines that run exactly those cases, and a prompt for a coding agent asking it to
+update those steps. Entries start checked, and what you uncheck is remembered in the browser
+(`localStorage`, per test revision and diff). Removed strings that no step matched are listed at
+the bottom.
+
+The page is plain JavaScript with the result embedded in it. Its only request is the one that
+recomputes the invocation lines when the selection changes, `POST changed-literals-impact/invocations`
+with `{"test_sha", "case_ids", "invocation_max_length", "extra_cases_allowed",
+"missing_cases_allowed"}`, answered with a `recommended_invocations` stanza. That reads only the
+test revision's already-built sqlite (no fetching, cloning or analysis), so it is quick; it is
+404 if that revision's db no longer exists. The model behind the page (links, prompt lines,
+grouping) is built in `service/report.py` and the page itself is `service/report_page.py`.
 
 ### Other endpoints
 
@@ -212,13 +253,14 @@ language-specific at the bottom; `CHANGED-LITERALS-DESIGN.md` has the full desig
 4. The adapter scores each literal for how likely it is to be user-facing text (JSX text
    and attributes like `placeholder`/`title` score high; identifiers, class names and
    paths score low). Findings below 0.3 are dropped.
-5. Each finding records `file`, `line`, `column`, `text`, `context`, `confidence`, and
-   `change` (`added` or `removed`).
+5. Each finding records `file`, `line`, `column`, `text`, `context`, `confidence`,
+   `change` (`added` or `removed`) and `hunk` (which hunk of the file's diff it came from).
 
-The impact check only uses the **removed** findings: an added string can't break an
-existing test, a removed or reworded one can. For each, `e2e_test_literals.service.impact`
+The impact check matches only the **removed** findings against tests: an added string can't
+break an existing test, a removed or reworded one can. For each, `e2e_test_literals.service.impact`
 compares its text against every literal in the test revision's index (per each literal's
-`string_kind`, see above) and annotates it with the matches.
+`string_kind`, see above) and annotates it with the matches. The added findings are kept to
+say what a removed string became (see "Result").
 
 ### Process layout
 

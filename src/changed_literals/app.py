@@ -22,7 +22,8 @@ rather than one endpoint that blocks the caller until it's done:
   GET /changed-literals/jobs/<job_id>/result
              [?offset=0&limit=200]
              -> once done: {"offset": ..., "limit": ..., "total": ...,
-                "findings": [...]} -- one Finding per entry, sliced to the
+                "findings": [...]} -- one Finding (file, line, column, text, context,
+                confidence, change, hunk) per entry, sliced to the
                 requested offset/limit window, with `total` reporting the
                 full resultset size regardless of the window. 409 while
                 still pending/running.

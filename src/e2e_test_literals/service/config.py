@@ -105,3 +105,6 @@ CHANGED_LITERALS_SOCKET_PATH = Path(
         str(SOCKET_DIR / "changed-literals.sock"),
     )
 )
+
+# Where TestRail case links in the impact report point (`<base>/index.php?/cases/view/<id>`).
+TESTRAIL_URL = os.environ.get("E2E_TEST_LITERALS_SERVICE_TESTRAIL_URL", "https://dominodatalab.testrail.io").rstrip("/")

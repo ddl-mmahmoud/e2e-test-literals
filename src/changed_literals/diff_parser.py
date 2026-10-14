@@ -22,6 +22,12 @@ class DiffFile:
     is_deleted_file: bool = False
     added_lines: set[int] = field(default_factory=set)
     removed_lines: set[int] = field(default_factory=set)
+    # Line -> index (0-based, within this file's diff) of the hunk that changed it. With
+    # --unified=0, the removed and added lines of one hunk are one edit, so findings that
+    # share a hunk are candidates to be the before/after of each other.
+    removed_hunks: dict[int, int] = field(default_factory=dict)
+    added_hunks: dict[int, int] = field(default_factory=dict)
+    hunk_count: int = 0
 
 
 def _strip_prefix(raw_path: str, prefix: str) -> str:
@@ -80,8 +86,14 @@ def parse_diff(text: str) -> list[DiffFile]:
             old_count = int(old_count_s) if old_count_s is not None else 1
             new_start = int(new_start_s)
             new_count = int(new_count_s) if new_count_s is not None else 1
-            current.removed_lines.update(range(old_start, old_start + old_count))
-            current.added_lines.update(range(new_start, new_start + new_count))
+            hunk = current.hunk_count
+            current.hunk_count += 1
+            for line_no in range(old_start, old_start + old_count):
+                current.removed_lines.add(line_no)
+                current.removed_hunks[line_no] = hunk
+            for line_no in range(new_start, new_start + new_count):
+                current.added_lines.add(line_no)
+                current.added_hunks[line_no] = hunk
             continue
 
     flush()

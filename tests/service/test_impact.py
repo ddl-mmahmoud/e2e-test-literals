@@ -127,14 +127,35 @@ def test_drops_findings_below_min_confidence(monkeypatch):
     assert result["findings"] == []
 
 
-def test_drops_added_findings(monkeypatch):
+def test_added_findings_are_kept_unmatched_and_do_not_drive_invocations(monkeypatch):
     monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
     _write_test_db("deadbeef")
-    _stub_changed_literals(monkeypatch, [_finding(change="added")])
+    added = _finding(change="added", text="Saved successfully", confidence=0.3)
+    _stub_changed_literals(monkeypatch, [added])
 
     result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
 
-    assert result["findings"] == []
+    # Not held to min_removal_confidence, and never annotated like a removal.
+    assert result["findings"] == [added]
+    assert result["total"] == 1
+    assert result["recommended_invocations"]["commands"] == []
+
+
+def test_removed_finding_gets_its_added_counterpart_from_the_same_hunk(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef")
+    removed = _finding(text="Saved successfully", hunk=0)
+    added = _finding(change="added", text="Saved!", line=11, hunk=0)
+    unrelated = _finding(change="added", text="Elsewhere", line=90, hunk=3)
+    _stub_changed_literals(monkeypatch, [removed, added, unrelated])
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
+    by_text = {f["text"]: f for f in result["findings"]}
+    assert result["total"] == 3
+    assert [r["text"] for r in by_text["Saved successfully"]["replacements"]] == ["Saved!"]
+    assert by_text["Saved successfully"]["replacements"][0]["chosen"] is True
+    assert "replacements" not in by_text["Saved!"]
 
 
 def test_removed_finding_with_no_substring_match_has_empty_match_list(monkeypatch):

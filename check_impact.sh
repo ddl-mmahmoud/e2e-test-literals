@@ -46,4 +46,5 @@ if [[ "$status" == "error" ]]; then
 fi
 
 echo "== Fetching result ==" >&2
-curl -sS -L -H "Authorization: Bearer $CLOUD_DOGFOOD_PAT" "$BASE/changed-literals-impact/jobs/$job_id/result" | jq .
+curl -sS -L -H "Authorization: Bearer $CLOUD_DOGFOOD_PAT" "$BASE/changed-literals-impact/jobs/$job_id/result" > "$job_id.json"
+jq -r '.recommended_invocations.commands[]' "$job_id.json"

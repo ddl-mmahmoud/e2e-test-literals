@@ -17,3 +17,7 @@ class Finding:
     context: str
     confidence: float
     change: Change
+    # Index of the diff hunk (within `file`'s diff) that changed this literal; a removed and
+    # an added finding with the same file and hunk are the two halves of one edit. None when
+    # the finding didn't come from a parsed diff.
+    hunk: int | None = None
