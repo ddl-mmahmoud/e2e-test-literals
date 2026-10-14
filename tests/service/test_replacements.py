@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from e2e_test_literals.service.replacements import MIN_SIMILARITY, attach_replacements, chosen_replacement
+from e2e_test_literals.service.replacements import (
+    MIN_SIMILARITY,
+    attach_replacements,
+    cancel_unchanged,
+    chosen_replacement,
+)
 
 
 def _f(change: str, text: str, *, file: str = "a.tsx", hunk: int | None = 0, line: int = 1, **extra) -> dict:
@@ -79,3 +84,37 @@ def test_added_findings_pass_through_unchanged_and_inputs_are_not_mutated():
     assert out[1] == added
     assert "replacements" not in removed
     assert out[0]["replacements"][0]["line"] == added["line"]
+
+
+def test_identical_text_removed_and_added_in_one_hunk_is_not_a_change():
+    findings = [_f("removed", "Access"), _f("added", "Access", line=2)]
+
+    assert cancel_unchanged(findings) == []
+
+
+def test_cancelling_lets_the_remaining_findings_pair_among_themselves():
+    findings = [_f("removed", "Access"), _f("removed", "Zzzzzz"), _f("added", "Access"), _f("added", "Qqq")]
+
+    result = _replacements(cancel_unchanged(findings))
+
+    assert list(result) == ["Zzzzzz"]
+    assert chosen_replacement({"replacements": result["Zzzzzz"]})["text"] == "Qqq"
+
+
+def test_cancelling_pairs_one_removal_with_one_addition():
+    findings = [_f("removed", "Access", line=1), _f("removed", "Access", line=2), _f("added", "Access", line=3)]
+
+    assert [(f["change"], f["line"]) for f in cancel_unchanged(findings)] == [("removed", 2)]
+
+
+def test_cancelling_needs_the_same_file_hunk_and_exact_text():
+    findings = [
+        _f("removed", "Access"),
+        _f("added", "Access", file="b.tsx"),
+        _f("added", "Access", hunk=1),
+        _f("added", "access"),
+        _f("removed", "Moved", hunk=None),
+        _f("added", "Moved", hunk=None),
+    ]
+
+    assert cancel_unchanged(findings) == findings

@@ -113,6 +113,11 @@ def test_prompt_line_without_a_replacement_says_so():
     assert 'was removed from the product and no replacement was detected' in prompt_line("Access", None, _literal())
 
 
+def test_prompt_line_is_omitted_when_the_text_did_not_change():
+    assert prompt_line("Access", "Access", _literal()) is None
+    assert prompt_line("Access", "Access", _literal(match_algorithm="substring_and_partial_ratio")) is None
+
+
 def _result(findings: list[dict], **overrides) -> dict:
     base = {
         "test_repo": "https://github.com/o/tests",
@@ -190,6 +195,14 @@ def test_the_chosen_replacement_reaches_the_change_and_the_prompt_lines():
     (change,) = built["changes"]
     assert change["replacement"] == "Manage access"
     assert '"Access" is now "Manage access"' in change["groups"][0]["entries"][0]["prompt_line"]
+
+
+def test_an_unchanged_replacement_leaves_the_entrys_prompt_line_empty():
+    replacements = [{"text": "Access", "chosen": True, "score": 100}]
+
+    built = build_report(_result([_finding(replacements=replacements)]))
+
+    assert built["changes"][0]["groups"][0]["entries"][0]["prompt_line"] is None
 
 
 def test_an_unchosen_candidate_is_not_stated_as_the_replacement():

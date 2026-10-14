@@ -24,6 +24,7 @@ practice.
 
 from __future__ import annotations
 
+import html
 import re
 
 from tree_sitter import Node
@@ -161,9 +162,38 @@ def _decode(node: Node) -> str:
 _FRAGMENT_SPLIT_RE = re.compile(r"[{}]|  +")
 
 
+def _is_text_run_part(node: Node) -> bool:
+    """Whether `node` can be one piece of a single run of prose: the grammar splits it at every
+    entity (`Q&amp;A` is text `Q`, entity `&amp;`, text `A`), and cannot parse a bare `&` at all
+    (`Access & Sharing` is text `Access`, then an ERROR node holding `& Sharing`)."""
+    return node.type in ("text", "entity") or (node.type == "ERROR" and node.text.startswith(b"&"))
+
+
+def _text_run(node: Node) -> str | None:
+    """The whole run of prose `node` (a `text` node) belongs to, as the page shows it -- source
+    whitespace kept, entities decoded -- or None when `node` is not the first `text` node of its
+    run, because an earlier one already reports the run."""
+    first = node
+    while first.prev_sibling is not None and _is_text_run_part(first.prev_sibling):
+        first = first.prev_sibling
+    last = first
+    while last.next_sibling is not None and _is_text_run_part(last.next_sibling):
+        last = last.next_sibling
+    head = first
+    while head.type != "text":
+        head = head.next_sibling
+    if head.id != node.id:
+        return None
+    parent_text = node.parent.text
+    offset = node.parent.start_byte
+    return html.unescape(parent_text[first.start_byte - offset : last.end_byte - offset].decode("utf-8", "replace"))
+
+
 def literal_texts_of(node: Node) -> list[str] | None:
     if node.type == "text":
-        raw = _decode(node)
+        raw = _text_run(node) if node.parent is not None else _decode(node)
+        if raw is None:
+            return []
         fragments = (segment.strip() for segment in _FRAGMENT_SPLIT_RE.split(raw))
         return [f for f in fragments if f]
     if node.type == "attribute_value":

@@ -17,7 +17,7 @@ Shape of `build_report(result)`:
             {"id", "file", "feature_url", "entries": [
                {"id", "case_id", "case_url", "scenario_name", "line", "step_url",
                 "step": {"before", "literal", "after"}, "tags": [{"text", "url"}],
-                "confidence", "prompt_line"}, ...]}, ...]}, ...],
+                "confidence", "prompt_line" (None: the text did not change, so the prompt omits it)}, ...]}, ...]}, ...],
      "unmatched": [{"file", "line", "column", "text", "diff_url", "replacement"}, ...]}
 """
 
@@ -83,11 +83,14 @@ def split_step(step_text: str, literal: str) -> dict:
     return {"before": step_text[:start], "literal": step_text[start:end], "after": step_text[end:]}
 
 
-def prompt_line(old: str, new: str | None, literal: dict) -> str:
-    """One bullet of the coding-agent prompt for one affected step. A literal compared with
-    `exact` is the whole label, so the new value simply replaces it; a freeform (substring)
-    literal is only part of the product text, so the whole old -> new change is stated and the
-    agent works out what the step should now say."""
+def prompt_line(old: str, new: str | None, literal: dict) -> str | None:
+    """One bullet of the coding-agent prompt for one affected step, or None when the text did
+    not actually change (`old == new`), so there is nothing for the agent to adjust. A literal
+    compared with `exact` is the whole label, so the new value simply replaces it; a freeform
+    (substring) literal is only part of the product text, so the whole old -> new change is
+    stated and the agent works out what the step should now say."""
+    if new == old:
+        return None
     where = (
         f"the step `{literal['step_text']}` in `{literal['source_file']}` "
         f"(line {literal['source_line']}, scenario \"{literal['scenario_name']}\", C{literal['case_id']})"

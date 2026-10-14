@@ -135,7 +135,9 @@ The kind -> algorithm table is `POLICIES` in `step_kinds.py`; an unlisted kind g
 `matched_test_literals` means "checked, no test depends on it". Filter on
 `change == "removed"` and a non-empty list to get the affected cases. *Added* findings are
 returned too (not held to `min_removal_confidence`, and never matched against tests): they are
-the candidates for what a removed string became. `changed_literals` tags each finding with the
+the candidates for what a removed string became. A removed and an added finding with identical
+text in one hunk are dropped first: that string did not change (only the markup around it did).
+`changed_literals` tags each finding with the
 diff `hunk` it came from, and a removed finding's `replacements` are the added findings of the
 same file and hunk, ranked by text similarity (`score`, 0-100); the one a removed string is
 paired with has `chosen: true` (`service/replacements.py` -- a heuristic: in a hunk with as many

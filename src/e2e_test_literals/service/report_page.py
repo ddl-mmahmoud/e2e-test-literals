@@ -136,7 +136,7 @@ function selectedEntries(model, off) {
 function promptText(model, off) {
   const lines = [];
   for (const entry of selectedEntries(model, off)) {
-    if (!lines.includes(entry.prompt_line)) lines.push(entry.prompt_line);
+    if (entry.prompt_line !== null && !lines.includes(entry.prompt_line)) lines.push(entry.prompt_line);
   }
   return lines.length ? [model.preamble, ...lines].join("\n") : "";
 }

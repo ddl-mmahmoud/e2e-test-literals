@@ -19,7 +19,7 @@ from . import changed_literals_client as cl_client
 from .generation import db_path, resolve_and_generate
 from .invocations import DEFAULT_MAX_LENGTH as DEFAULT_INVOCATION_MAX_LENGTH
 from .invocations import recommend_invocations
-from .replacements import attach_replacements
+from .replacements import attach_replacements, cancel_unchanged
 
 DEFAULT_MIN_REMOVAL_CONFIDENCE = 0.85
 # Default 0.0: every case a removed finding matched gets an invocation.
@@ -166,6 +166,9 @@ def compute_impact(
     """The actual unit of work for a `POST /changed-literals-impact` job (see
     impact_jobs.py). Runs on the job's own worker thread; nothing here is async.
 
+    Strings whose text is identical in a removed and an added finding of one hunk were not
+    changed (see `replacements.cancel_unchanged`) and appear in neither.
+
     `findings` holds every detected change: the `change == "removed"` ones at or above
     `min_removal_confidence` -- this is a *second*, client-side filter on top of
     changed-literals' own internal floor of 0.3 (it never returns anything below that), not
@@ -204,7 +207,7 @@ def compute_impact(
     base_ref, updated_ref = status.get("base", base_ref), status.get("updated", updated_ref)
 
     findings = []
-    for finding in _fetch_all_findings(created["job_id"]):
+    for finding in cancel_unchanged(_fetch_all_findings(created["job_id"])):
         if finding["change"] != "removed":
             findings.append(finding)  # a candidate replacement; see attach_replacements
         elif finding["confidence"] >= min_removal_confidence:

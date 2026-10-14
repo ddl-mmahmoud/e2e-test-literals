@@ -158,6 +158,19 @@ def test_removed_finding_gets_its_added_counterpart_from_the_same_hunk(monkeypat
     assert "replacements" not in by_text["Saved!"]
 
 
+def test_a_string_removed_and_re_added_unchanged_in_one_hunk_is_not_reported(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    _write_test_db("deadbeef")
+    removed = _finding(text="Saved successfully", hunk=0)
+    added = _finding(change="added", text="Saved successfully", line=11, hunk=0)
+    _stub_changed_literals(monkeypatch, [removed, added])
+
+    result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated")
+
+    assert result["findings"] == []
+    assert result["recommended_invocations"]["commands"] == []
+
+
 def test_removed_finding_with_no_substring_match_has_empty_match_list(monkeypatch):
     monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
     _write_test_db("deadbeef")

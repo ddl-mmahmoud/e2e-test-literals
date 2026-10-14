@@ -237,3 +237,23 @@ def test_stored_deselections_are_restored_but_unknown_or_malformed_ones_are_igno
     )
 
     assert result == {"good": [known], "broken": [], "unset": [], "wrongType": []}
+
+
+@needs_node
+def test_entries_without_a_prompt_line_are_left_out_of_the_prompt(model):
+    for entry in [e for c in model["changes"] for g in c["groups"] for e in g["entries"]][:3]:
+        entry["prompt_line"] = None
+
+    prompt = _run(model, "out(promptText(model, new Set()))")
+
+    assert prompt.split("\n")[1:] == [e["prompt_line"] for e in [e for c in model["changes"] for g in c["groups"] for e in g["entries"]][3:]]
+
+
+@needs_node
+def test_a_prompt_of_only_unchanged_entries_is_empty(model):
+    for c in model["changes"]:
+        for g in c["groups"]:
+            for e in g["entries"]:
+                e["prompt_line"] = None
+
+    assert _run(model, "out(promptText(model, new Set()))") == ""

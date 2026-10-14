@@ -8,6 +8,9 @@ assigned greedily by text similarity (rapidfuzz `ratio`, 0-100), best first, eac
 finding replacing at most one removed finding -- a hunk that rewrote three labels pairs
 each old label with its closest new one rather than all three with the same one.
 
+Before any of that, `cancel_unchanged` drops removed/added pairs with identical text in a
+hunk: those strings did not change, so they are neither removals nor replacements.
+
 Heuristic by design (see IMPACT-REPORT-PLAN.md): a hunk with equally many removed and added
 findings is taken at its word and pairs them however similar they are; in a lopsided hunk a
 pair must also reach `MIN_SIMILARITY` to count, since some of its strings were genuinely
@@ -25,6 +28,28 @@ _CANDIDATE_KEYS = ("file", "line", "column", "text", "context", "confidence")
 
 def _candidate(added: dict, score: float, chosen: bool) -> dict:
     return {**{key: added[key] for key in _CANDIDATE_KEYS}, "score": round(score, 1), "chosen": chosen}
+
+
+def cancel_unchanged(findings: list[dict]) -> list[dict]:
+    """`findings` without the removed/added pairs that say the same thing: a string whose text
+    is identical on both sides of one hunk was not changed -- the edit was to the markup around
+    it -- so reporting it as "`X` is now `X`" (or running its tests) is noise. Pairing is by
+    exact text within a file and hunk, one removal against one addition, so a hunk that
+    removed `X` twice and added it once still has one `X` removed. Run this before
+    `attach_replacements`, so the remaining removals pair up among themselves."""
+    unmatched_added: dict[tuple[str, int, str], list[int]] = {}
+    for index, finding in enumerate(findings):
+        if finding["change"] == "added" and finding.get("hunk") is not None:
+            unmatched_added.setdefault((finding["file"], finding["hunk"], finding["text"]), []).append(index)
+
+    cancelled: set[int] = set()
+    for index, finding in enumerate(findings):
+        if finding["change"] != "removed" or finding.get("hunk") is None:
+            continue
+        candidates = unmatched_added.get((finding["file"], finding["hunk"], finding["text"]))
+        if candidates:
+            cancelled.update((index, candidates.pop(0)))
+    return [finding for index, finding in enumerate(findings) if index not in cancelled]
 
 
 def attach_replacements(findings: list[dict]) -> list[dict]:

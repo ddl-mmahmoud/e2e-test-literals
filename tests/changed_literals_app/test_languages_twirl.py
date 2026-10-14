@@ -98,3 +98,28 @@ def test_match_case_fragments_are_low_confidence_not_missing_real_text():
         "Imports and exports let you share environment variables and files between projects."
         in high_confidence_texts
     )
+
+
+def test_a_bare_ampersand_does_not_cut_the_text_short():
+    src = '<li class="x"><a href="#access" role="tab" data-toggle="tab">Access & Sharing</a></li>'
+    texts = [f.text for f in _findings(src) if f.context == "html-text"]
+
+    assert texts == ["Access & Sharing"]
+
+
+def test_prose_around_a_bare_ampersand_stays_one_finding():
+    texts = [f.text for f in _findings("<p>Access & Sharing for all <b>teams</b></p>") if f.context == "html-text"]
+
+    assert texts == ["Access & Sharing for all", "teams"]
+
+
+def test_entities_join_their_text_and_are_decoded():
+    texts = [f.text for f in _findings("<p>Access &amp; Sharing</p><p>Q&amp;A</p>") if f.context == "html-text"]
+
+    assert texts == ["Access & Sharing", "Q&A"]
+
+
+def test_the_finding_sits_where_the_run_starts():
+    (finding,) = [f for f in _findings("<p>\n  Access &amp; Sharing</p>") if f.context == "html-text"]
+
+    assert (finding.line, finding.column) == (2, 3)
