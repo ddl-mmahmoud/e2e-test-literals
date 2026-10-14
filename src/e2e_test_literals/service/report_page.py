@@ -68,7 +68,7 @@ _TEMPLATE = r"""<!doctype html>
   .arrow { color: var(--dim); font-weight: 400; }
   .group { margin: 1.4rem 0 0 1.2rem; border-top: 2px dashed var(--line-strong); padding-top: .8rem; }
   .group-head { display: flex; gap: .5rem; align-items: center; }
-  .fold { all: unset; cursor: pointer; width: 1rem; text-align: center; color: var(--dim); flex: none; }
+  .fold { all: unset; cursor: pointer; width: 2rem; font-size: 3rem; line-height: 1rem; text-align: center; color: var(--dim); flex: none; }
   .fold::before { content: "\25B8"; }
   .fold[aria-expanded="true"]::before { content: "\25BE"; }
   .fold:focus-visible { outline: 2px solid currentColor; border-radius: .15rem; }
@@ -227,8 +227,8 @@ function foldToggle(host, folded) {
   return button;
 }
 
-function foldCount(n, noun) {
-  return el("span", { class: "fold-count" }, "(" + n + " " + noun + (n === 1 ? "" : "s") + ")");
+function foldCount(n, singular, plural) {
+  return el("span", { class: "fold-count" }, "(" + n + " " + (n === 1 ? singular : plural) + ")");
 }
 
 function renderEntry(entry) {
@@ -256,7 +256,7 @@ function renderGroup(group) {
     foldToggle(host, true),
     selector(group.entries),
     link(group.feature_url, el("span", { class: "mono" }, group.file)),
-    foldCount(group.entries.length, "entry")
+    foldCount(group.entries.length, "entry", "entries")
   );
   host.append(head, el("div", { class: "children" }, ...group.entries.map(renderEntry)));
   return host;
@@ -274,7 +274,7 @@ function renderChange(change) {
     { class: "change-head" },
     foldToggle(host, false),
     selector(all),
-    el("div", {}, where, text, foldCount(change.groups.length, "feature file"))
+    el("div", {}, where, text, foldCount(change.groups.length, "feature file", "feature files"))
   );
   host.append(head, el("div", { class: "children" }, ...change.groups.map(renderGroup)));
   return host;
