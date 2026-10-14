@@ -93,6 +93,15 @@ if not EXTERNAL_PREFIX.endswith("/"):
 
 EXTERNAL_DATA_PREFIX = EXTERNAL_PREFIX + DATA_SEGMENT
 
+# The scheme://host[:port] (no trailing slash) a browser or API client reaches this
+# service at, used to turn the job `status_url`/`result_url`/`report_url` paths into
+# absolute URLs. Nothing in the Domino app's environment carries its own public
+# hostname (DOMINO_RUN_HOST_PATH is only the path), so an explicit value here wins;
+# otherwise app.py derives it per request from the `X-Forwarded-Host`/`-Proto` headers
+# service_ui forwards (see service_ui/proxy.py), and with neither, falls back to the
+# old path-only URLs.
+EXTERNAL_ORIGIN = os.environ.get("E2E_TEST_LITERALS_SERVICE_EXTERNAL_ORIGIN", "").rstrip("/")
+
 # Unix domain socket of the sibling `changed_literals` process (see
 # CHANGED-LITERALS-IMPACT-PLAN.md and changed_literals/app.py) -- another process
 # within this same repo/Domino app, reached over a UDS like every other inter-process

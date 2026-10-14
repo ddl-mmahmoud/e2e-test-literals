@@ -200,12 +200,39 @@ class InvocationsRequest(BaseModel):
     missing_cases_allowed: int | None = Field(None, ge=0)
 
 
+_logged_origins: set[str] = set()
+
+
+def _external_origin(request: Request) -> str:
+    """scheme://host a client reaches this service at, or "" if unknown (callers then
+    emit path-only URLs). `config.EXTERNAL_ORIGIN` wins; otherwise the first value of
+    the `X-Forwarded-Host`/`X-Forwarded-Proto` headers service_ui sets. Deliberately
+    not the plain `Host` header: over the UI's unix socket that is a placeholder."""
+    if config.EXTERNAL_ORIGIN:
+        origin, source = config.EXTERNAL_ORIGIN, "E2E_TEST_LITERALS_SERVICE_EXTERNAL_ORIGIN"
+    else:
+        host = request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+        if not host:
+            origin, source = "", "no x-forwarded-host header"
+        else:
+            proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip() or "https"
+            origin, source = f"{proto}://{host}", "x-forwarded-host/-proto headers"
+    # Once per distinct result, so a client polling a job doesn't flood the log.
+    if origin not in _logged_origins:
+        _logged_origins.add(origin)
+        print(f"external origin for job URLs: {origin or '(none, path-only URLs)'} -- from {source}", flush=True)
+    return origin
+
+
+def _external_url(request: Request, path: str) -> str:
+    """`path` (relative to the service root, no leading slash) as an absolute URL where
+    the origin is known. Rooted at EXTERNAL_PREFIX rather than PREFIX: they differ in
+    the real deployment (see config.py), and a client only ever sees the external one."""
+    return f"{_external_origin(request)}{config.EXTERNAL_PREFIX}{path}"
+
+
 def _job_status_path(job_id: str) -> str:
     return f"{config.PREFIX}revisions/jobs/{job_id}"
-
-
-def _job_result_path(job_id: str) -> str:
-    return f"{config.PREFIX}revisions/jobs/{job_id}/result"
 
 
 def _datasette_url(sha: str) -> str:
@@ -217,21 +244,25 @@ def _datasette_url(sha: str) -> str:
     return f"{config.DATA_PREFIX}{sha}"
 
 
-def _job_body(job: Job) -> dict:
-    body = {"job_id": job.id, "status": job.status, "status_url": _job_status_path(job.id)}
+def _job_body(job: Job, request: Request) -> dict:
+    body = {
+        "job_id": job.id,
+        "status": job.status,
+        "status_url": _external_url(request, f"revisions/jobs/{job.id}"),
+    }
     if job.status == "error":
         body["error"] = job.error
     if job.status == "done":
-        body["result_url"] = _job_result_path(job.id)
+        body["result_url"] = _external_url(request, f"revisions/jobs/{job.id}/result")
     return body
 
 
-async def create_revision(payload: RevisionRequest) -> JSONResponse:
+async def create_revision(payload: RevisionRequest, request: Request) -> JSONResponse:
     job, thread = create_job(payload.repo, payload.ref)
     # Snapshot the body before starting the thread -- it races to flip job.status to
     # "running" immediately, and the 202 response should reliably report the "pending"
     # state the job was just created in (see jobs.create_job's docstring).
-    body = _job_body(job)
+    body = _job_body(job, request)
     thread.start()
     return JSONResponse(status_code=202, content=body, headers={"Location": _job_status_path(job.id)})
 
@@ -281,8 +312,8 @@ def _get_job_or_404(job_id: str) -> Job:
     return job
 
 
-def revision_job_status(job_id: str) -> dict:
-    return _job_body(_get_job_or_404(job_id))
+def revision_job_status(job_id: str, request: Request) -> dict:
+    return _job_body(_get_job_or_404(job_id), request)
 
 
 def revision_job_result(job_id: str) -> dict:
@@ -306,33 +337,29 @@ def _impact_job_status_path(job_id: str) -> str:
     return f"{config.PREFIX}changed-literals-impact/jobs/{job_id}"
 
 
-def _impact_job_result_path(job_id: str) -> str:
-    return f"{config.PREFIX}changed-literals-impact/jobs/{job_id}/result"
-
-
 def _impact_job_phase(job: impact_jobs.ImpactJob) -> str:
     if job.status in ("done", "error"):
         return job.status
     return job.tracker.current or "queued"
 
 
-def _impact_job_body(job: impact_jobs.ImpactJob) -> dict:
+def _impact_job_body(job: impact_jobs.ImpactJob, request: Request) -> dict:
     body = {
         "job_id": job.id,
         "status": job.status,
         "phase": _impact_job_phase(job),
-        "status_url": _impact_job_status_path(job.id),
+        "status_url": _external_url(request, f"changed-literals-impact/jobs/{job.id}"),
         "profiling": job.tracker.snapshot(),
     }
     if job.status == "error":
         body["error"] = job.error
     if job.status == "done":
-        body["result_url"] = _impact_job_result_path(job.id)
+        body["result_url"] = _external_url(request, f"changed-literals-impact/jobs/{job.id}/result")
         body["report_url"] = f"{body['result_url']}?report=1"
     return body
 
 
-async def create_impact_job(payload: ImpactRequest) -> JSONResponse:
+async def create_impact_job(payload: ImpactRequest, request: Request) -> JSONResponse:
     job, thread = impact_jobs.create_job(
         payload.test_repo,
         payload.test_ref,
@@ -348,7 +375,7 @@ async def create_impact_job(payload: ImpactRequest) -> JSONResponse:
         payload.pr_number,
     )
     # Snapshot before starting the thread -- same race as create_revision above.
-    body = _impact_job_body(job)
+    body = _impact_job_body(job, request)
     thread.start()
     return JSONResponse(status_code=202, content=body, headers={"Location": _impact_job_status_path(job.id)})
 
@@ -360,8 +387,8 @@ def _get_impact_job_or_404(job_id: str) -> impact_jobs.ImpactJob:
     return job
 
 
-def impact_job_status(job_id: str) -> dict:
-    return _impact_job_body(_get_impact_job_or_404(job_id))
+def impact_job_status(job_id: str, request: Request) -> dict:
+    return _impact_job_body(_get_impact_job_or_404(job_id), request)
 
 
 def impact_job_result(job_id: str, report: bool = False):

@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from e2e_test_literals.service_ui import app as app_module
-from e2e_test_literals.service_ui import client, config
+from e2e_test_literals.service_ui import client, config, proxy
 
 
 @pytest.fixture
@@ -149,6 +149,7 @@ class _FakeUpstreamHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802 -- fixed by BaseHTTPRequestHandler
         self.requested_path = self.path  # exposed for the test to assert on
         _FakeUpstreamHandler.last_requested_path = self.path
+        _FakeUpstreamHandler.last_headers = {k.lower(): v for k, v in self.headers.items()}
         body = b'{"tables": ["literals"]}'
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
@@ -193,3 +194,46 @@ def test_unmatched_path_is_proxied_to_the_upstream_api(ui_client: TestClient, mo
     # before forwarding -- the request the fake upstream actually received should be
     # exactly the path+query the browser asked this UI for.
     assert _FakeUpstreamHandler.last_requested_path == "/data/deadbeef/literals.json?_sort=id"
+
+
+def test_proxy_forwards_the_hostname_the_browser_used(ui_client: TestClient, monkeypatch, fake_upstream):
+    monkeypatch.setattr(config, "API_SOCKET_PATH", fake_upstream)
+
+    ui_client.get("/changed-literals-impact/jobs/abc", headers={"Host": "domino.example.com"})
+
+    # TestClient's scheme is http and nothing set X-Forwarded-Proto, so the UI's own
+    # scheme is what gets passed on.
+    assert _FakeUpstreamHandler.last_headers["x-forwarded-host"] == "domino.example.com"
+    assert _FakeUpstreamHandler.last_headers["x-forwarded-proto"] == "http"
+
+
+def test_proxy_prefers_forwarded_headers_from_a_gateway_and_sends_each_once(
+    ui_client: TestClient, monkeypatch, fake_upstream
+):
+    monkeypatch.setattr(config, "API_SOCKET_PATH", fake_upstream)
+
+    ui_client.get(
+        "/changed-literals-impact/jobs/abc",
+        headers={"X-Forwarded-Host": "public.example.com", "X-Forwarded-Proto": "https"},
+    )
+
+    assert _FakeUpstreamHandler.last_headers["x-forwarded-host"] == "public.example.com"
+    assert _FakeUpstreamHandler.last_headers["x-forwarded-proto"] == "https"
+
+
+def test_proxy_logs_headers_once_per_origin_without_credentials(
+    ui_client: TestClient, monkeypatch, fake_upstream, capsys
+):
+    monkeypatch.setattr(config, "API_SOCKET_PATH", fake_upstream)
+    monkeypatch.setattr(proxy, "_logged_origin_signatures", set())
+    headers = {"Host": "domino.example.com", "Authorization": "Bearer secret", "Cookie": "session=secret"}
+
+    ui_client.get("/changed-literals-impact/jobs/abc", headers=headers)
+    ui_client.get("/changed-literals-impact/jobs/abc", headers=headers)
+    ui_client.get("/data/deadbeef", headers=headers)  # Datasette pages carry no URLs: not logged
+
+    out = capsys.readouterr().out
+    assert out.count("ui request headers for GET /changed-literals-impact/jobs/abc") == 1
+    assert "ui request headers for GET /data" not in out
+    assert "domino.example.com" in out
+    assert "secret" not in out

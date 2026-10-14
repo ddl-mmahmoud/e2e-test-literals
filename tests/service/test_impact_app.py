@@ -16,7 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from e2e_test_literals.service import app as app_module
-from e2e_test_literals.service import impact, impact_jobs
+from e2e_test_literals.service import config, impact, impact_jobs
 from e2e_test_literals.service.changed_literals_client import ChangedLiteralsError
 
 _REQUEST_BODY = {
@@ -71,6 +71,44 @@ def test_full_flow_returns_computed_result(impact_client: TestClient, monkeypatc
 
     result = impact_client.get(f"/changed-literals-impact/jobs/{job_id}/result").json()
     assert result == fake_result
+
+
+def _create_done_job(client: TestClient, monkeypatch, **headers) -> dict:
+    monkeypatch.setattr(impact_jobs, "compute_impact", lambda *a, **k: {"total": 0, "findings": []})
+    job_id = client.post("/changed-literals-impact", json=_REQUEST_BODY, headers=headers).json()["job_id"]
+    _await_job(client, job_id)
+    return client.get(f"/changed-literals-impact/jobs/{job_id}", headers=headers).json()
+
+
+def test_job_urls_are_absolute_when_the_ui_forwards_the_original_host(impact_client: TestClient, monkeypatch):
+    status = _create_done_job(
+        impact_client, monkeypatch, **{"X-Forwarded-Host": "domino.example.com", "X-Forwarded-Proto": "https"}
+    )
+    base = f"https://domino.example.com/changed-literals-impact/jobs/{status['job_id']}"
+    assert status["status_url"] == base
+    assert status["result_url"] == f"{base}/result"
+    assert status["report_url"] == f"{base}/result?report=1"
+
+
+def test_job_urls_use_the_external_prefix_not_the_internal_one(impact_client: TestClient, monkeypatch):
+    # The real deployment: this process unprefixed internally, but reached under the
+    # Domino host path (see config.py's EXTERNAL_PREFIX).
+    monkeypatch.setattr(config, "EXTERNAL_PREFIX", "/ext/app/")
+    status = _create_done_job(impact_client, monkeypatch, **{"X-Forwarded-Host": "domino.example.com"})
+    assert status["result_url"] == f"https://domino.example.com/ext/app/changed-literals-impact/jobs/{status['job_id']}/result"
+
+
+def test_configured_external_origin_wins_over_forwarded_headers(impact_client: TestClient, monkeypatch):
+    monkeypatch.setattr(config, "EXTERNAL_ORIGIN", "https://configured.example.com")
+    status = _create_done_job(impact_client, monkeypatch, **{"X-Forwarded-Host": "other.example.com"})
+    assert status["result_url"].startswith("https://configured.example.com/changed-literals-impact/jobs/")
+
+
+def test_forwarded_header_lists_use_their_first_value(impact_client: TestClient, monkeypatch):
+    status = _create_done_job(
+        impact_client, monkeypatch, **{"X-Forwarded-Host": "a.example.com, proxy.internal", "X-Forwarded-Proto": "http, https"}
+    )
+    assert status["result_url"].startswith("http://a.example.com/changed-literals-impact/jobs/")
 
 
 def test_default_min_removal_confidence_is_applied(impact_client: TestClient, monkeypatch):

@@ -39,6 +39,48 @@ _HOP_BY_HOP_HEADERS = frozenset(
 )
 
 
+# Headers whose values must never reach the log.
+_SENSITIVE_HEADERS = frozenset({"authorization", "cookie", "proxy-authorization", "x-api-key"})
+
+# Request headers that could carry the public hostname, whichever way Domino's gateway
+# (or a client) sets it -- a change in any of them is what triggers a log line below.
+_ORIGIN_HEADERS = ("host", "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port", "forwarded", "x-original-host")
+
+_logged_origin_signatures: set[tuple] = set()
+
+
+def _log_headers_once_per_origin(request: Request, upstream_path: str) -> None:
+    """Print every request header (minus credentials) the first time a given combination
+    of host-related headers is seen on a job route -- the only routes whose responses
+    carry URLs (see service/app.py's `_external_origin`). The point is to find out
+    what Domino's gateway actually sends, so the origin derivation can be adjusted to
+    it; once per combination keeps a polling client from flooding the log."""
+    if upstream_path.startswith("/data"):
+        return
+    signature = tuple(request.headers.get(name) for name in _ORIGIN_HEADERS)
+    if signature in _logged_origin_signatures:
+        return
+    _logged_origin_signatures.add(signature)
+    shown = {
+        key: "<redacted>" if key.lower() in _SENSITIVE_HEADERS else value for key, value in request.headers.items()
+    }
+    print(
+        f"ui request headers for {request.method} {upstream_path} "
+        f"(client {request.client.host if request.client else None}, scheme {request.url.scheme}): {shown}",
+        flush=True,
+    )
+
+
+def _forwarded_origin_headers(request: Request) -> list[tuple[str, str]]:
+    """`X-Forwarded-Host`/`-Proto` for the upstream API: whatever a gateway in front of
+    this UI already set, else the host and scheme this UI itself was reached at. The
+    upstream API only ever sees a placeholder `Host` (over the unix socket) and can't
+    know either."""
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    return [("x-forwarded-host", host), ("x-forwarded-proto", proto)] if host else []
+
+
 def _filter_headers(items) -> list[tuple[str, str]]:
     return [(key, value) for key, value in items if key.lower() not in _HOP_BY_HOP_HEADERS]
 
@@ -54,12 +96,16 @@ async def proxy_to_api(request: Request, upstream_path: str) -> StreamingRespons
     transport = httpx.AsyncHTTPTransport(uds=str(config.API_SOCKET_PATH))
     client = httpx.AsyncClient(transport=transport, base_url="http://api")
 
+    _log_headers_once_per_origin(request, upstream_path)
+    # Drop any incoming x-forwarded-host/-proto before appending the resolved pair, so
+    # the upstream never sees two (it reads the first).
+    incoming = [(k, v) for k, v in request.headers.items() if k.lower() not in ("x-forwarded-host", "x-forwarded-proto")]
     body = await request.body()
     upstream_request = client.build_request(
         request.method,
         upstream_path,
         params=request.query_params,
-        headers=_filter_headers(request.headers.items()),
+        headers=_filter_headers(incoming) + _forwarded_origin_headers(request),
         content=body,
     )
     upstream_response = await client.send(upstream_request, stream=True)
