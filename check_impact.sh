@@ -34,7 +34,7 @@ fi
 echo "== Polling job $job_id ==" >&2
 status="pending"
 while [[ "$status" != "done" && "$status" != "error" ]]; do
-  sleep 1
+  sleep 8
   status_resp=$(curl -sS -L -H "Authorization: Bearer $CLOUD_DOGFOOD_PAT" "$BASE/changed-literals-impact/jobs/$job_id")
   status=$(echo "$status_resp" | jq -r .status)
   echo "$status_resp" | jq . >&2
