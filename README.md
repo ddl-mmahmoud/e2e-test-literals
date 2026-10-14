@@ -167,7 +167,8 @@ is already built, so tuning these two parameters needs no re-index. The logic is
 
 ### The impact report
 
-Add `?report=1` to the result URL to get the result as an HTML report instead of JSON:
+Add `?report=1` to the result URL to get the result as an HTML report instead of JSON (a done
+job's status body also carries this as `report_url`):
 
 ```
 $BASE/changed-literals-impact/jobs/$JOB_ID/result?report=1
@@ -180,7 +181,9 @@ TestRail case (`E2E_TEST_LITERALS_SERVICE_TESTRAIL_URL`, default
 `https://dominodatalab.testrail.io`). Every step has a checkbox, as does each feature file within a
 changed string, and so does each changed string; what is checked drives two panes: the
 `/test-e2e` lines that run exactly those cases, and a prompt for a coding agent asking it to
-update those steps. Entries start checked, and what you uncheck is remembered in the browser
+update those steps. Changed strings and feature files can be folded; a folded row says how many children it holds and
+its checkbox still shows whether all, none or some of them are checked. Changed strings start
+unfolded and feature files folded. Entries start checked, and what you uncheck is remembered in the browser
 (`localStorage`, per test revision and diff). Removed strings that no step matched are listed at
 the bottom.
 

@@ -67,6 +67,7 @@ def test_full_flow_returns_computed_result(impact_client: TestClient, monkeypatc
     status = _await_job(impact_client, job_id)
     assert status["status"] == "done"
     assert status["result_url"] == f"/changed-literals-impact/jobs/{job_id}/result"
+    assert status["report_url"] == f"/changed-literals-impact/jobs/{job_id}/result?report=1"
 
     result = impact_client.get(f"/changed-literals-impact/jobs/{job_id}/result").json()
     assert result == fake_result

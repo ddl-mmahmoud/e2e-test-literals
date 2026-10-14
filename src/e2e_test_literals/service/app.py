@@ -47,7 +47,8 @@ it's done -- mirrors changed-literals' app.py:
                     "min_literal_match_confidence": 0.7,
                     "min_invocation_confidence": 0.0, "invocation_max_length": 300,
                     "extra_cases_allowed": null, "missing_cases_allowed": null}
-             -> 202 Accepted, same job_id/status_url/result_url shape as /revisions.
+             -> 202 Accepted, same job_id/status_url/result_url shape as /revisions (a
+                done job's status also has report_url: result_url with ?report=1).
                 Builds the test revision if needed, asks changed-literals to diff
                 literals_repo between base_ref/updated_ref, and checks which of its
                 REMOVED findings (at/above min_removal_confidence) contain a literal
@@ -306,6 +307,7 @@ def _impact_job_body(job: impact_jobs.ImpactJob) -> dict:
         body["error"] = job.error
     if job.status == "done":
         body["result_url"] = _impact_job_result_path(job.id)
+        body["report_url"] = f"{body['result_url']}?report=1"
     return body
 
 

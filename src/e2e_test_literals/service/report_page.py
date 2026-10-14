@@ -45,7 +45,7 @@ _TEMPLATE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Impact report</title>
 <style>
-  :root { color-scheme: light dark; --dim: #8889; --line: #8884; --mark: #f7d94c66; }
+  :root { color-scheme: light dark; --dim: #8889; --line: #8884; --line-strong: #888c; --mark: #f7d94c66; }
   body { font-family: system-ui, sans-serif; margin: 0; padding: 0 1rem 3rem; }
   h1 { font-size: 1.3rem; margin: 1rem 0 .25rem; }
   h2 { font-size: 1rem; margin: 0 0 .5rem; }
@@ -66,8 +66,15 @@ _TEMPLATE = r"""<!doctype html>
   .change-head .where { display: block; }
   .changed-text { display: block; font-weight: 600; margin-top: .1rem; }
   .arrow { color: var(--dim); font-weight: 400; }
-  .group { margin: .6rem 0 0 1.2rem; border-top: 1px dashed var(--line); padding-top: .4rem; }
+  .group { margin: 1.4rem 0 0 1.2rem; border-top: 2px dashed var(--line-strong); padding-top: .8rem; }
   .group-head { display: flex; gap: .5rem; align-items: center; }
+  .fold { all: unset; cursor: pointer; width: 1rem; text-align: center; color: var(--dim); flex: none; }
+  .fold::before { content: "\25B8"; }
+  .fold[aria-expanded="true"]::before { content: "\25BE"; }
+  .fold:focus-visible { outline: 2px solid currentColor; border-radius: .15rem; }
+  .fold-count { display: none; font-size: .8rem; color: var(--dim); }
+  .folded > .change-head .fold-count, .folded > .group-head .fold-count { display: inline; }
+  .folded > .children { display: none; }
   .entry { display: flex; gap: .5rem; align-items: flex-start; margin: .5rem 0 0 1.4rem; }
   .entry .lines > div { overflow-wrap: anywhere; }
   .tags { font-size: .8rem; color: var(--dim); }
@@ -208,6 +215,22 @@ function selector(entries) {
   return box;
 }
 
+// A fold toggle for `host`: while it has the `folded` class its `.children` are hidden and the
+// head's `.fold-count` ("3 feature files") is shown. The head's checkbox keeps summarising the
+// children's selection either way.
+function foldToggle(host, folded) {
+  const button = el("button", { type: "button", class: "fold", title: "Fold or unfold" });
+  const sync = () => button.setAttribute("aria-expanded", String(!host.classList.contains("folded")));
+  host.classList.toggle("folded", folded);
+  button.addEventListener("click", () => { host.classList.toggle("folded"); sync(); });
+  sync();
+  return button;
+}
+
+function foldCount(n, noun) {
+  return el("span", { class: "fold-count" }, "(" + n + " " + noun + (n === 1 ? "" : "s") + ")");
+}
+
 function renderEntry(entry) {
   const tags = el("div", { class: "tags" });
   for (const tag of entry.tags) tags.append(link(tag.url || entry.step_url, "@" + tag.text));
@@ -226,8 +249,17 @@ function renderEntry(entry) {
 }
 
 function renderGroup(group) {
-  const head = el("div", { class: "group-head" }, selector(group.entries), link(group.feature_url, el("span", { class: "mono" }, group.file)));
-  return el("div", { class: "group" }, head, ...group.entries.map(renderEntry));
+  const host = el("div", { class: "group" });
+  const head = el(
+    "div",
+    { class: "group-head" },
+    foldToggle(host, true),
+    selector(group.entries),
+    link(group.feature_url, el("span", { class: "mono" }, group.file)),
+    foldCount(group.entries.length, "entry")
+  );
+  host.append(head, el("div", { class: "children" }, ...group.entries.map(renderEntry)));
+  return host;
 }
 
 function renderChange(change) {
@@ -236,7 +268,16 @@ function renderChange(change) {
   if (change.replacement !== null) text.append(el("span", { class: "arrow" }, " → "), '"' + change.replacement + '"');
   else text.append(el("span", { class: "arrow" }, " → (no replacement detected)"));
   const where = el("span", { class: "where mono" }, link(change.diff_url, change.file + " L" + change.line + " C" + change.column));
-  return el("section", { class: "change" }, el("div", { class: "change-head" }, selector(all), el("div", {}, where, text)), ...change.groups.map(renderGroup));
+  const host = el("section", { class: "change" });
+  const head = el(
+    "div",
+    { class: "change-head" },
+    foldToggle(host, false),
+    selector(all),
+    el("div", {}, where, text, foldCount(change.groups.length, "feature file"))
+  );
+  host.append(head, el("div", { class: "children" }, ...change.groups.map(renderGroup)));
+  return host;
 }
 
 function renderUnmatched() {
