@@ -85,6 +85,12 @@ it's done -- mirrors changed-literals' app.py:
                 `/result?report=1` it is served as the HTML impact report instead
                 (report_page.py).
 
+  GET /changed-literals-impact-report
+             -> an HTML form with a field for each parameter of POST /changed-literals-impact
+                (impact_form_page.py). Submitting it creates the job and navigates the
+                browser to that job's `/result?report=1`: the usual 409 JSON saying to poll
+                until the job is done, then the HTML report -- so the entry point of a UI.
+
   POST /changed-literals-impact/invocations
              body: {"test_sha": ..., "case_ids": [...], "invocation_max_length": 300,
                     "extra_cases_allowed": null, "missing_cases_allowed": null}
@@ -133,6 +139,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import config, impact, impact_jobs
 from .generation import db_path
+from .impact_form_page import render_form
 from .invocations import DEFAULT_MAX_LENGTH as DEFAULT_INVOCATION_MAX_LENGTH
 from .invocations import recommend_invocations
 from .jobs import Job, create_job, get_job, list_active_jobs
@@ -410,6 +417,10 @@ def impact_job_result(job_id: str, report: bool = False):
     return job.result
 
 
+def impact_report_form() -> HTMLResponse:
+    return HTMLResponse(render_form())
+
+
 def impact_invocations(payload: InvocationsRequest) -> dict:
     """Only reads the revision's sqlite -- no fetch, clone or analysis -- so it is cheap enough
     to call on every toggle of the report page."""
@@ -488,6 +499,7 @@ app.add_api_route("/changed-literals-impact", create_impact_job, methods=["POST"
 app.add_api_route("/changed-literals-impact/jobs/{job_id}", impact_job_status, methods=["GET"])
 app.add_api_route("/changed-literals-impact/jobs/{job_id}/result", impact_job_result, methods=["GET"])
 app.add_api_route("/changed-literals-impact/invocations", impact_invocations, methods=["POST"])
+app.add_api_route("/changed-literals-impact-report", impact_report_form, methods=["GET"], response_class=HTMLResponse)
 # Registered before the catch-alls below (Starlette matches routes in registration
 # order): a request for Datasette's shared static-asset namespace would otherwise be
 # swallowed by the sha-based catch-alls, which would treat the leading `-` segment as
@@ -511,6 +523,9 @@ if config.PREFIX != "/":
         config.PREFIX + "changed-literals-impact/jobs/{job_id}/result", impact_job_result, methods=["GET"]
     )
     app.add_api_route(config.PREFIX + "changed-literals-impact/invocations", impact_invocations, methods=["POST"])
+    app.add_api_route(
+        config.PREFIX + "changed-literals-impact-report", impact_report_form, methods=["GET"], response_class=HTMLResponse
+    )
     app.add_api_route(config.DATA_PREFIX + "-/static/{path:path}", datasette_static_asset, methods=["GET", "HEAD"])
     app.add_api_route(config.DATA_PREFIX + "{sha_and_ext}", proxy_revision_top, methods=_PROXY_METHODS)
     app.add_api_route(config.DATA_PREFIX + "{sha}/{path:path}", proxy_revision, methods=_PROXY_METHODS)

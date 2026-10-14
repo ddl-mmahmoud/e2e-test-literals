@@ -165,6 +165,13 @@ is already built, so tuning these two parameters needs no re-index. The logic is
 `map_test_trigger_coverage.py` (`--extra-cases-allowed` / `--missing-cases-allowed`); see
 `service/tag_planning.py`.
 
+### The impact form
+
+`GET $BASE/changed-literals-impact-report` is an HTML form with a field for each parameter of
+`POST /changed-literals-impact`. Submitting it starts the job and opens
+`.../jobs/$JOB_ID/result?report=1`, which shows the "poll" JSON until the job is done and the
+report below once it is, so refresh that page to follow along.
+
 ### The impact report
 
 Add `?report=1` to the result URL to get the result as an HTML report instead of JSON (a done
