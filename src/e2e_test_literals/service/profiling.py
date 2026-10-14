@@ -78,9 +78,6 @@ class PhaseTracker:
         self._started = time.monotonic()
         self._finished: float | None = None
         self.current: str | None = None
-        # Applied to every phase that starts from now on. Unused for now: each cache is
-        # reported by the one phase that consults it (see the module docstring).
-        self.ambient_caches: dict[str, str] = {}
 
     @contextlib.contextmanager
     def phase(self, name: str) -> Iterator[PhaseEntry]:
@@ -88,7 +85,7 @@ class PhaseTracker:
         on the yielded entry (`entry.caches["test_db"] = "hit"`), and any other facts in
         `entry.extra`. An exception escaping the body marks the phase "failed"."""
         with self._lock:
-            entry = PhaseEntry(started=time.monotonic(), caches=dict(self.ambient_caches))
+            entry = PhaseEntry(started=time.monotonic())
             self._entries[name] = entry
             self.current = name
         try:
@@ -97,14 +94,6 @@ class PhaseTracker:
             self._end(entry, "failed")
             raise
         self._end(entry, "done")
-
-    def skip(self, name: str, **caches: str) -> None:
-        """Record `name` as satisfied without any work (a cache hit covered it)."""
-        with self._lock:
-            self._entries[name] = PhaseEntry(
-                started=time.monotonic(), duration=0.0, state="done", caches={**self.ambient_caches, **caches}
-            )
-            self.current = name
 
     def adopt(self, current: str | None, phases: dict) -> None:
         """Take over phases another service reports (its status body's "phase" and

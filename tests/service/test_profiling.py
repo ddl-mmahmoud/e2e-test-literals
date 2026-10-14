@@ -65,31 +65,6 @@ def test_an_exception_marks_the_phase_failed_and_propagates():
     assert tracker.snapshot()["phases"]["matching_literals"]["state"] == "failed"
 
 
-def test_skip_records_a_zero_second_done_phase_with_its_cache():
-    tracker = _tracker()
-    tracker.skip("fetching_literals_repo", findings="hit")
-
-    assert tracker.snapshot()["phases"]["fetching_literals_repo"] == {
-        "state": "done",
-        "seconds": 0.0,
-        "caches": {"findings": "hit"},
-    }
-    assert tracker.current == "fetching_literals_repo"
-
-
-def test_ambient_caches_apply_to_phases_started_afterwards():
-    tracker = _tracker()
-    with tracker.phase("populating_test_db"):
-        pass
-    tracker.ambient_caches["findings"] = "miss"
-    with tracker.phase("fetching_literals_repo") as phase:
-        phase.caches["repo_clone"] = "hit"
-
-    phases = tracker.snapshot()["phases"]
-    assert "caches" not in phases["populating_test_db"]
-    assert phases["fetching_literals_repo"]["caches"] == {"findings": "miss", "repo_clone": "hit"}
-
-
 def test_finish_freezes_total_seconds():
     tracker = _tracker()
     tracker.finish()
