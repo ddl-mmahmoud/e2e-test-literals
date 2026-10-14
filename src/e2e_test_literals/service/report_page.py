@@ -110,7 +110,7 @@ _TEMPLATE = r"""<!doctype html>
         <button type="button" id="expand-all">Expand all</button>
         <button type="button" id="collapse-all">Collapse all</button>
       </span>
-      <label>Min confidence
+      <label id="min-confidence-label" hidden>Min confidence
         <input type="range" id="min-confidence" min="0" max="1" step="0.05" value="0">
         <output id="min-confidence-value" class="mono">0.00</output>
       </label>
@@ -478,12 +478,22 @@ async function copyText(text, button, label) {
   setTimeout(() => { button.textContent = label; }, 1500);
 }
 
+// The confidence slider only shows while "exact only" is off, and a hidden slider must not
+// filter: exact-only drops the cutoff, unticking it brings back whatever the slider says.
+function syncConfidenceSlider() {
+  const slider = document.getElementById("min-confidence");
+  document.getElementById("min-confidence-label").hidden = filter.exactOnly;
+  filter.minConfidence = filter.exactOnly ? 0 : Number(slider.value);
+}
+
 function onFilterChanged() {
+  syncConfidenceSlider();
   document.getElementById("min-confidence-value").textContent = filter.minConfidence.toFixed(2);
   refresh();
   updateInvocations();
 }
 
+syncConfidenceSlider();
 renderMeta();
 document.getElementById("changes").append(...model.changes.map(renderChange));
 renderUnmatched();
