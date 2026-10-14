@@ -8,7 +8,7 @@ tested (see IMPACT-REPORT-PLAN.md).
 
 Shape of `build_report(result)`:
 
-    {"title", "storage_key", "meta": {...}, "preamble": "<first lines of the prompt>",
+    {"title", "storage_key", "meta": {...}, "preamble": "<opening paragraph of the prompt>",
      "recompute": {...what the page POSTs to recompute invocations...},
      "invocations": <the result's own recommended_invocations>,
      "changes": [   # removed product strings that some test step matched, in file/line order
@@ -18,7 +18,8 @@ Shape of `build_report(result)`:
                {"id", "case_id", "case_url", "scenario_name", "line", "step_url",
                 "step": {"before", "literal", "after"}, "tags": [{"text", "url"}],
                 "confidence", "exact" (a case-sensitive match of an `exact`-algorithm literal),
-                "prompt_line" (None: the text did not change, so the prompt omits it)}, ...]}, ...]}, ...],
+                "prompt" (None: the text did not change, so the prompt omits it; else
+                {"change", "step", "partial"}, see `prompt_item`)}, ...]}, ...]}, ...],
      "unmatched": [{"file", "line", "column", "text", "diff_url", "replacement"}, ...]}
 """
 
@@ -110,23 +111,27 @@ def split_step(step_text: str, literal: str) -> dict:
     return {"before": step_text[:start], "literal": step_text[start:end], "after": step_text[end:]}
 
 
-def prompt_line(old: str, new: str | None, literal: dict) -> str | None:
-    """One bullet of the coding-agent prompt for one affected step, or None when the text did
-    not actually change (`old == new`), so there is nothing for the agent to adjust. A literal
-    compared with `exact` is the whole label, so the new value simply replaces it; a freeform
-    (substring) literal is only part of the product text, so the whole old -> new change is
-    stated and the agent works out what the step should now say."""
+def prompt_item(old: str, new: str | None, literal: dict) -> dict | None:
+    """What the coding-agent prompt needs to know about one affected step, or None when the
+    text did not actually change (`old == new`), so there is nothing for the agent to adjust.
+    `change` states the product change and is the key the page groups steps under (so steps
+    sharing a change share one statement of it); `step` is the step text; `partial` is, for a
+    freeform (substring) literal that is only part of the product text, what the step checks
+    for -- the agent works out what that should now say -- and None for an `exact` literal,
+    which is the whole label, so the new value simply replaces it. The page adds the feature
+    file and the case id from the surrounding report, and leaves out line numbers and the
+    scenario name: the step text and case id are what the agent finds the step by."""
     if new == old:
         return None
-    where = (
-        f"the step `{literal['step_text']}` in `{literal['source_file']}` "
-        f"(line {literal['source_line']}, scenario \"{literal['scenario_name']}\", C{literal['case_id']})"
-    )
     if new is None:
-        return f'- "{old}" was removed from the product and no replacement was detected; it is used in {where}'
-    if literal["match_algorithm"] == "exact":
-        return f'- "{old}" is now "{new}" in {where}'
-    return f'- The product text "{old}" is now "{new}"; {where} checks for "{literal["value"]}"'
+        change = f'"{old}" was removed from the product and no replacement was detected. Affected steps:'
+    else:
+        change = f'"{old}" is now "{new}" in the product. Affected steps:'
+    return {
+        "change": change,
+        "step": literal["step_text"],
+        "partial": None if literal["match_algorithm"] == matching.EXACT else literal["value"],
+    }
 
 
 def _tags(tags: list[str]) -> list[dict]:
@@ -142,7 +147,11 @@ def _preamble(result: dict) -> str:
         diff = f"pull request #{result['pr_number']} of {result['literals_repo']}"
     else:
         diff = f"{result['literals_repo']} {str(result['base_ref'])[:_SHORT_SHA]}...{str(result['updated_ref'])[:_SHORT_SHA]}"
-    return f"The following strings have changed in the product ({diff}), and these test steps need to be updated accordingly:"
+    return (
+        f"The following strings have changed in the product ({diff}), and the test steps that use them need to be "
+        "updated accordingly. Steps are listed under each change by feature file, then by TestRail case id "
+        "(the scenario's `@testrail(<id>)` tag), and are to be found by their text."
+    )
 
 
 def build_report(result: dict) -> dict:
@@ -195,7 +204,7 @@ def build_report(result: dict) -> dict:
                     "tags": _tags(literal["tags"]),
                     "confidence": min(finding["confidence"], literal["match_confidence"]),
                     "exact": is_exact_match(literal, finding["text"]),
-                    "prompt_line": prompt_line(finding["text"], new_text, literal),
+                    "prompt": prompt_item(finding["text"], new_text, literal),
                 }
             )
         changes.append(

@@ -121,16 +121,77 @@ def test_the_whole_page_script_parses(tmp_path):
 
 
 @needs_node
-def test_everything_starts_selected_and_the_prompt_lists_each_distinct_step_once(model):
+def test_everything_starts_selected_and_the_prompt_is_the_preamble_then_each_change_with_its_steps(model):
     prompt = _run(
         model,
         "const off = new Set(); out({state: selectionState(entriesOf(model), off), prompt: promptText(model, off)});",
     )
 
     assert prompt["state"] == "all"
-    lines = prompt["prompt"].split("\n")
-    assert lines[0] == model["preamble"]
-    assert len(lines) == 1 + 4  # 4 entries, 4 distinct bullets
+    assert prompt["prompt"].split("\n") == [
+        model["preamble"],
+        "",
+        '"Access" was removed from the product and no replacement was detected. Affected steps:',
+        "tests/a.feature",
+        '  C1: I click the link "Access"',
+        '  C2: I click the link "Access"',
+        "",
+        '"Other" was removed from the product and no replacement was detected. Affected steps:',
+        "tests/a.feature",
+        '  C3: I click the link "Access"',  # cases follow their order in the feature file
+        '  C2: I click the link "Access" again',
+    ]
+
+
+@needs_node
+def test_the_prompt_states_a_change_once_and_a_feature_once_however_many_steps_it_covers():
+    # the shape of a real report: one removed string used in several features, one scenario
+    # using it on two lines, another using it in two different steps
+    literals = [
+        _literal(1, 10, source_file="tests/b.feature", step_text='I check the checkbox "Access"'),
+        _literal(1, 20, source_file="tests/b.feature", step_text='I check the checkbox "Access"'),
+        _literal(2, 5, source_file="tests/b.feature", step_text='I check the checkbox "Access"'),
+        _literal(2, 8, source_file="tests/b.feature", step_text='I see the checkbox "Access" checked'),
+        _literal(3, 3, source_file="tests/a.feature"),
+    ]
+    model = build_report(_result([_finding(10, literals)]))
+
+    prompt = _run(model, "out(promptText(model, new Set()))").split("\n")
+
+    assert prompt[1:] == [
+        "",
+        '"Access" was removed from the product and no replacement was detected. Affected steps:',
+        "tests/a.feature",
+        '  C3: I click the link "Access"',
+        "tests/b.feature",
+        "  C2:",
+        '    I check the checkbox "Access"',
+        '    I see the checkbox "Access" checked',
+        '  C1: I check the checkbox "Access" (2 occurrences)',
+    ]
+    assert "line" not in "\n".join(prompt).lower() and "Scenario" not in "\n".join(prompt)
+
+
+@needs_node
+def test_findings_with_the_same_change_share_one_statement_and_different_changes_do_not():
+    same = [_finding(10, [_literal(1, 5)]), _finding(30, [_literal(2, 6)])]
+    other = _finding(40, [_literal(3, 7)], text="Other", replacements=[{"text": "Newer", "chosen": True, "score": 50}])
+    model = build_report(_result([*same, other]))
+
+    prompt = _run(model, "out(promptText(model, new Set()))")
+
+    assert prompt.count("Affected steps:") == 2
+    assert '"Other" is now "Newer" in the product.' in prompt
+
+
+@needs_node
+def test_a_step_checking_only_part_of_the_changed_text_says_what_it_checks_for():
+    literal = _literal(1, 5, match_algorithm="substring_and_partial_ratio", value="new project", step_text='I see "new project"')
+    model = build_report(_result([_finding(10, [literal], text="Create a new project")]))
+
+    prompt = _run(model, "out(promptText(model, new Set()))")
+
+    assert '  C1: I see "new project" [only checks for "new project", part of the changed text]' in prompt
 
 
 @needs_node
@@ -157,7 +218,7 @@ def test_deselecting_a_group_and_the_selection_state_of_its_ancestors(model):
     assert result["everything"] == "some"
     assert result["other"] == "all"
     assert result["cases"] == [2, 3]
-    assert "Scenario 1" not in result["prompt"]
+    assert "C1:" not in result["prompt"] and "C2:" in result["prompt"]
 
 
 @needs_node
@@ -177,7 +238,7 @@ def test_selecting_one_entry_leaves_its_group_partial(model):
         """,
     )
 
-    assert result == {"group": "some", "all": "some", "prompt": 2}
+    assert result == {"group": "some", "all": "some", "prompt": 1 + 4}  # preamble, blank, change, file, step
 
 
 @needs_node
@@ -240,13 +301,14 @@ def test_stored_deselections_are_restored_but_unknown_or_malformed_ones_are_igno
 
 
 @needs_node
-def test_entries_without_a_prompt_line_are_left_out_of_the_prompt(model):
-    for entry in [e for c in model["changes"] for g in c["groups"] for e in g["entries"]][:3]:
-        entry["prompt_line"] = None
+def test_entries_without_a_prompt_are_left_out_of_the_prompt(model):
+    flat = [e for c in model["changes"] for g in c["groups"] for e in g["entries"]]
+    for entry in flat[:3]:  # all of "Access" and the first "Other" step
+        entry["prompt"] = None
 
     prompt = _run(model, "out(promptText(model, new Set()))")
 
-    assert prompt.split("\n")[1:] == [e["prompt_line"] for e in [e for c in model["changes"] for g in c["groups"] for e in g["entries"]][3:]]
+    assert prompt.split("\n")[1:] == ["", '"Other" was removed from the product and no replacement was detected. Affected steps:', "tests/a.feature", '  C2: I click the link "Access" again']
 
 
 @needs_node
@@ -254,7 +316,7 @@ def test_a_prompt_of_only_unchanged_entries_is_empty(model):
     for c in model["changes"]:
         for g in c["groups"]:
             for e in g["entries"]:
-                e["prompt_line"] = None
+                e["prompt"] = None
 
     assert _run(model, "out(promptText(model, new Set()))") == ""
 
@@ -277,7 +339,7 @@ def test_the_confidence_cutoff_drops_weaker_entries_from_everything_derived_from
         """,
     )
 
-    assert result == {"entries": 3, "unfiltered": 4, "cases": [1, 2], "prompt": 1 + 3, "group": "all"}
+    assert result == {"entries": 3, "unfiltered": 4, "cases": [1, 2], "prompt": 1 + 4 + 5, "group": "all"}
 
 
 @needs_node

@@ -10,7 +10,7 @@ from e2e_test_literals.service.report import (
     build_report,
     diff_url,
     github_repo_url,
-    prompt_line,
+    prompt_item,
     split_step,
 )
 
@@ -91,31 +91,40 @@ def _literal(**overrides) -> dict:
     return base
 
 
-def test_prompt_line_for_an_exact_match_states_the_new_value():
-    assert prompt_line("Access", "Manage access", _literal()) == (
-        '- "Access" is now "Manage access" in the step `I click the link "Access"` in `tests/a.feature` '
-        '(line 63, scenario "Check links", C771386)'
-    )
+def test_prompt_item_for_an_exact_match_states_the_new_value_and_only_the_step():
+    assert prompt_item("Access", "Manage access", _literal()) == {
+        "change": '"Access" is now "Manage access" in the product. Affected steps:',
+        "step": 'I click the link "Access"',
+        "partial": None,
+    }
 
 
-def test_prompt_line_for_a_substring_match_states_the_whole_change_and_the_literal():
-    line = prompt_line(
+def test_prompt_item_for_a_substring_match_keeps_what_the_step_checks_for():
+    item = prompt_item(
         "Create a new project now",
         "Create a project now",
         _literal(match_algorithm="substring_and_partial_ratio", value="new project"),
     )
 
-    assert line.startswith('- The product text "Create a new project now" is now "Create a project now"; ')
-    assert line.endswith('checks for "new project"')
+    assert item["change"].startswith('"Create a new project now" is now "Create a project now"')
+    assert item["partial"] == "new project"
 
 
-def test_prompt_line_without_a_replacement_says_so():
-    assert 'was removed from the product and no replacement was detected' in prompt_line("Access", None, _literal())
+def test_prompt_item_without_a_replacement_says_so():
+    assert "was removed from the product and no replacement was detected" in prompt_item("Access", None, _literal())["change"]
 
 
-def test_prompt_line_is_omitted_when_the_text_did_not_change():
-    assert prompt_line("Access", "Access", _literal()) is None
-    assert prompt_line("Access", "Access", _literal(match_algorithm="substring_and_partial_ratio")) is None
+def test_prompt_item_leaves_out_what_the_agent_does_not_need():
+    rendered = str(prompt_item("Access", None, _literal()))
+
+    assert "Check links" not in rendered  # scenario name: the case id is shown by the page
+    assert "63" not in rendered  # line number
+    assert "tests/a.feature" not in rendered  # the page groups by feature file
+
+
+def test_prompt_item_is_omitted_when_the_text_did_not_change():
+    assert prompt_item("Access", "Access", _literal()) is None
+    assert prompt_item("Access", "Access", _literal(match_algorithm="substring_and_partial_ratio")) is None
 
 
 def _result(findings: list[dict], **overrides) -> dict:
@@ -187,22 +196,22 @@ def test_findings_are_ordered_by_file_then_line_and_unmatched_ones_are_set_aside
     assert [u["text"] for u in built["unmatched"]] == ["None"]
 
 
-def test_the_chosen_replacement_reaches_the_change_and_the_prompt_lines():
+def test_the_chosen_replacement_reaches_the_change_and_the_prompt_items():
     replacements = [{"text": "Manage access", "chosen": True, "score": 40}]
 
     built = build_report(_result([_finding(replacements=replacements)]))
 
     (change,) = built["changes"]
     assert change["replacement"] == "Manage access"
-    assert '"Access" is now "Manage access"' in change["groups"][0]["entries"][0]["prompt_line"]
+    assert '"Access" is now "Manage access"' in change["groups"][0]["entries"][0]["prompt"]["change"]
 
 
-def test_an_unchanged_replacement_leaves_the_entrys_prompt_line_empty():
+def test_an_unchanged_replacement_leaves_the_entrys_prompt_empty():
     replacements = [{"text": "Access", "chosen": True, "score": 100}]
 
     built = build_report(_result([_finding(replacements=replacements)]))
 
-    assert built["changes"][0]["groups"][0]["entries"][0]["prompt_line"] is None
+    assert built["changes"][0]["groups"][0]["entries"][0]["prompt"] is None
 
 
 def test_an_unchosen_candidate_is_not_stated_as_the_replacement():

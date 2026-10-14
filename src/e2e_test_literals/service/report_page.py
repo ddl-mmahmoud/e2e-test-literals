@@ -174,12 +174,41 @@ function selectedEntries(model, off, filter = NO_FILTER) {
   return entriesOf(model, filter).filter((entry) => !off.has(entry.id));
 }
 
+// The prompt states each product change once, then lists the steps it affects by feature file
+// and case id, so nothing is repeated per step: change -> file -> case -> step text. The same
+// step on several lines of a scenario is one line with an occurrence count.
 function promptText(model, off, filter = NO_FILTER) {
-  const lines = [];
-  for (const entry of selectedEntries(model, off, filter)) {
-    if (entry.prompt_line !== null && !lines.includes(entry.prompt_line)) lines.push(entry.prompt_line);
+  const slot = (map, key) => {
+    if (!map.has(key)) map.set(key, new Map());
+    return map.get(key);
+  };
+  const changes = new Map(); // change statement -> file -> case id -> step -> Set of lines
+  for (const change of model.changes) {
+    for (const group of change.groups) {
+      for (const entry of visibleEntries(group.entries, filter)) {
+        if (off.has(entry.id) || entry.prompt === null) continue;
+        const { step, partial } = entry.prompt;
+        const text = partial === null ? step : `${step} [only checks for "${partial}", part of the changed text]`;
+        const lines = slot(slot(slot(changes, entry.prompt.change), group.file), entry.case_id);
+        if (!lines.has(text)) lines.set(text, new Set());
+        lines.get(text).add(entry.line);
+      }
+    }
   }
-  return lines.length ? [model.preamble, ...lines].join("\n") : "";
+  if (!changes.size) return "";
+  const out = [model.preamble];
+  for (const [statement, files] of changes) {
+    out.push("", statement);
+    for (const file of [...files.keys()].sort()) {
+      out.push(file);
+      for (const [caseId, steps] of files.get(file)) {
+        const rendered = [...steps].map(([text, lines]) => (lines.size > 1 ? `${text} (${lines.size} occurrences)` : text));
+        if (rendered.length === 1) out.push(`  C${caseId}: ${rendered[0]}`);
+        else out.push(`  C${caseId}:`, ...rendered.map((line) => `    ${line}`));
+      }
+    }
+  }
+  return out.join("\n");
 }
 
 // The cases whose `/test-e2e` lines are wanted: those of selected entries that clear the
