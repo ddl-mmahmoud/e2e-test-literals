@@ -17,7 +17,8 @@ Shape of `build_report(result)`:
             {"id", "file", "feature_url", "entries": [
                {"id", "case_id", "case_url", "scenario_name", "line", "step_url",
                 "step": {"before", "literal", "after"}, "tags": [{"text", "url"}],
-                "confidence", "prompt_line" (None: the text did not change, so the prompt omits it)}, ...]}, ...]}, ...],
+                "confidence", "exact" (a case-sensitive match of an `exact`-algorithm literal),
+                "prompt_line" (None: the text did not change, so the prompt omits it)}, ...]}, ...]}, ...],
      "unmatched": [{"file", "line", "column", "text", "diff_url", "replacement"}, ...]}
 """
 
@@ -27,6 +28,7 @@ import hashlib
 import re
 from urllib.parse import quote
 
+from .. import matching
 from . import config
 from .replacements import chosen_replacement
 
@@ -66,6 +68,31 @@ def blob_url(repo_url: str | None, sha: str, path: str, line: int | None = None)
         return None
     url = f"{repo_url}/blob/{sha}/{quote(path)}"
     return url if line is None else f"{url}#L{line}"
+
+
+def ref_url(repo_url: str | None, base_ref: str | None, updated_ref: str | None, pr_number: int | None) -> str | None:
+    """The pull request, or else the comparison, that the literals diff came from."""
+    if repo_url is None:
+        return None
+    if pr_number is not None:
+        return f"{repo_url}/pull/{pr_number}"
+    if base_ref and updated_ref:
+        return f"{repo_url}/compare/{base_ref}...{updated_ref}"
+    return None
+
+
+def tree_url(repo_url: str | None, sha: str) -> str | None:
+    """GitHub's browse page for the repo as of `sha`."""
+    return None if repo_url is None else f"{repo_url}/tree/{sha}"
+
+
+def is_exact_match(literal: dict, text: str) -> bool:
+    """Whether the literal equals the changed `text` (modulo whitespace) with the same casing.
+    A literal matched case-insensitively, or by containment, is not. This is not the same as
+    a confidence of 1.0: a `data` literal is an exact match at a flat, lower confidence."""
+    return literal["match_algorithm"] == matching.EXACT and matching.normalize_whitespace(
+        literal["value"]
+    ) == matching.normalize_whitespace(text)
 
 
 def testrail_case_url(case_id: int) -> str:
@@ -167,6 +194,7 @@ def build_report(result: dict) -> dict:
                     "step": split_step(literal["step_text"], literal["value"]),
                     "tags": _tags(literal["tags"]),
                     "confidence": min(finding["confidence"], literal["match_confidence"]),
+                    "exact": is_exact_match(literal, finding["text"]),
                     "prompt_line": prompt_line(finding["text"], new_text, literal),
                 }
             )
@@ -203,6 +231,8 @@ def build_report(result: dict) -> dict:
             "pr_number": pr_number,
             "literals_url": literals_url,
             "test_url": test_url,
+            "literals_ref_url": ref_url(literals_url, base_ref, updated_ref, pr_number),
+            "test_sha_url": tree_url(test_url, result["test_sha"]),
         },
         "preamble": _preamble(result),
         "recompute": {

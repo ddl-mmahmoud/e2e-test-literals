@@ -14,9 +14,8 @@ create_resp=$(curl -sS -L -X POST -H "Authorization: Bearer $CLOUD_DOGFOOD_PAT" 
 {
   "test_repo": "https://github.com/cerebrotech/internal-e2e-tests-service",
   "test_ref": "main",
-  "literals_repo": "https://github.com/cerebrotech/domino",
-  "base_ref": "18f72106469b17c5338f076ac588a95dd1ba6374",
-  "updated_ref": "f58ba93730d887fafb610f6f3397d25de36a072a",
+  "literals_repo": "https://github.com/cerebrotech/frontend-web-ui-service",
+  "pr_number": 3166,
   "min_removal_confidence": 0.9,
   "extra_cases_allowed": null,
   "missing_cases_allowed": null

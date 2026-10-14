@@ -183,7 +183,13 @@ changed string, and so does each changed string; what is checked drives two pane
 `/test-e2e` lines that run exactly those cases, and a prompt for a coding agent asking it to
 update those steps. Changed strings and feature files can be folded; a folded row says how many children it holds and
 its checkbox still shows whether all, none or some of them are checked. Changed strings start
-unfolded and feature files folded. Entries start checked, and what you uncheck is remembered in the browser
+unfolded and feature files folded; "Expand all" / "Collapse all" in the toolbar open or close every fold.
+Two filters hide entries below a "Min confidence" cutoff (each entry shows its confidence) or, with
+"Exact, case-sensitive matches only", every entry that is not an `exact`-algorithm literal equal to the
+changed string with the same casing -- not the same as confidence 1.0, since e.g. `data` literals are
+exact matches at a lower flat confidence. Hidden entries do not count towards the selection, the prompt or
+the invocations. The header's PR/comparison and test SHA link to GitHub. The invocations pane has one block
+(with its own Copy button) per `/test-e2e` line, plus "Copy all". Entries start checked, and what you uncheck is remembered in the browser
 (`localStorage`, per test revision and diff). Removed strings that no step matched are listed at
 the bottom.
 

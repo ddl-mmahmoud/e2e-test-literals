@@ -251,3 +251,34 @@ def test_non_github_repos_simply_get_no_links():
     assert built["changes"][0]["groups"][0]["feature_url"] is None
     assert built["changes"][0]["groups"][0]["entries"][0]["step_url"] is None
 
+
+
+def test_the_header_links_to_the_pull_request_or_comparison_and_to_the_test_revisions_tree():
+    pr = build_report(_result([_finding()], pr_number=7))["meta"]
+    compare = build_report(_result([_finding()]))["meta"]
+
+    assert pr["literals_ref_url"] == "https://github.com/o/product/pull/7"
+    assert compare["literals_ref_url"] == f"https://github.com/o/product/compare/{'b' * 40}...{'u' * 40}"
+    assert pr["test_sha_url"] == f"https://github.com/o/tests/tree/{'t' * 40}"
+
+
+def test_the_header_gets_no_links_for_non_github_repos():
+    meta = build_report(_result([_finding()], test_repo="/local/tests", literals_repo="/local/product"))["meta"]
+
+    assert meta["literals_ref_url"] is None and meta["test_sha_url"] is None
+
+
+@pytest.mark.parametrize(
+    ("literal", "exact"),
+    [
+        (_literal(), True),
+        (_literal(value="  Access "), True),  # whitespace is normalized away
+        (_literal(value="access", match_confidence=0.7), False),  # differs by case only
+        (_literal(match_algorithm="substring_and_partial_ratio", match_confidence=0.8), False),
+        (_literal(string_kind="data", match_confidence=0.3), True),  # exact, though not at confidence 1.0
+    ],
+)
+def test_an_entry_is_exact_only_for_a_case_sensitive_match_of_an_exact_literal(literal, exact):
+    built = build_report(_result([_finding(matches=[literal])]))
+
+    assert built["changes"][0]["groups"][0]["entries"][0]["exact"] is exact

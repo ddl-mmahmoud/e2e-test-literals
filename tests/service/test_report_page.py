@@ -257,3 +257,71 @@ def test_a_prompt_of_only_unchanged_entries_is_empty(model):
                 e["prompt_line"] = None
 
     assert _run(model, "out(promptText(model, new Set()))") == ""
+
+
+@needs_node
+def test_the_confidence_cutoff_drops_weaker_entries_from_everything_derived_from_the_selection(model):
+    # the fixture's one weak entry is case 3 at 0.7; the rest are 0.9
+    result = _run(
+        model,
+        """
+        const filter = {minConfidence: 0.8, exactOnly: false};
+        const off = new Set();
+        out({
+          entries: entriesOf(model, filter).length,
+          unfiltered: entriesOf(model).length,
+          cases: invocationCaseIds(model, off, filter),
+          prompt: promptText(model, off, filter).split("\\n").length,
+          group: selectionState(visibleEntries(model.changes[1].groups[0].entries, filter), off),
+        });
+        """,
+    )
+
+    assert result == {"entries": 3, "unfiltered": 4, "cases": [1, 2], "prompt": 1 + 3, "group": "all"}
+
+
+@needs_node
+def test_the_cutoff_keeps_an_entry_exactly_at_the_slider_value_despite_float_noise(model):
+    model["changes"][1]["groups"][0]["entries"][0]["confidence"] = 0.8 - 1e-12  # was the 0.7 one (case 3)
+
+    kept = _run(model, "out(entriesOf(model, {minConfidence: 0.8, exactOnly: false}).length)")
+
+    assert kept == 4
+
+
+@needs_node
+def test_exact_only_keeps_just_the_exact_entries_and_composes_with_the_cutoff(model):
+    flat = [e for c in model["changes"] for g in c["groups"] for e in g["entries"]]
+    assert [e["case_id"] for e in flat] == [1, 2, 3, 2]
+    for entry, exact in zip(flat, [True, False, True, False]):
+        entry["exact"] = exact  # the 0.7 entry is case 3
+
+    result = _run(
+        model,
+        """
+        const off = new Set();
+        const exact = {minConfidence: 0, exactOnly: true};
+        out({
+          exact: entriesOf(model, exact).length,
+          both: entriesOf(model, {minConfidence: 0.8, exactOnly: true}).length,
+          cases: invocationCaseIds(model, off, exact),
+        });
+        """,
+    )
+
+    assert result == {"exact": 2, "both": 1, "cases": [1, 3]}
+
+
+@needs_node
+def test_select_none_style_changes_only_touch_visible_entries(model):
+    result = _run(
+        model,
+        """
+        const off = new Set();
+        const filter = {minConfidence: 0.8, exactOnly: false};
+        setSelected(entriesOf(model, filter), off, false);
+        out({off: off.size, weak: selectedEntries(model, off).filter(e => e.confidence < 0.8).length});
+        """,
+    )
+
+    assert result == {"off": 3, "weak": 1}  # the hidden, weaker entry stays selected

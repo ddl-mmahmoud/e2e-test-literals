@@ -45,7 +45,8 @@ _TEMPLATE = r"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Impact report</title>
 <style>
-  :root { color-scheme: light dark; --dim: #8889; --line: #8884; --line-strong: #888c; --mark: #f7d94c66; }
+  :root { color-scheme: light dark; --dim: #8889; --line: #8884; --line-strong: #888c; --mark: #f7d94c66; --head-bg: #8882; }
+  [hidden] { display: none !important; }
   body { font-family: system-ui, sans-serif; margin: 0; padding: 0 1rem 3rem; }
   h1 { font-size: 1.3rem; margin: 1rem 0 .25rem; }
   h2 { font-size: 1rem; margin: 0 0 .5rem; }
@@ -58,11 +59,18 @@ _TEMPLATE = r"""<!doctype html>
   @media (max-width: 1000px) { .side { position: static; max-height: none; } }
   .pane { border: 1px solid var(--line); border-radius: .4rem; padding: .6rem .8rem; min-height: 0; display: flex; flex-direction: column; }
   .pane pre { margin: 0; white-space: pre-wrap; word-break: break-word; overflow: auto; max-height: 40vh; }
+  .invocation-list { display: flex; flex-direction: column; gap: .5rem; overflow: auto; max-height: 40vh; }
+  .invocation { display: flex; gap: .5rem; align-items: flex-start; border: 1px solid var(--line); border-radius: .3rem; padding: .3rem .5rem; }
+  .invocation pre { flex: 1; min-width: 0; max-height: none; overflow: visible; }
+  .invocation button { flex: none; }
   .pane .head { display: flex; justify-content: space-between; align-items: center; gap: .5rem; }
-  .toolbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; font-size: .9rem; }
+  .toolbar { display: flex; gap: .5rem 1rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; font-size: .9rem; }
+  .toolbar .group-of { display: flex; gap: .5rem; align-items: center; }
+  .toolbar label { display: flex; gap: .4rem; align-items: center; }
   button { padding: .25rem .7rem; cursor: pointer; }
   .change { border: 1px solid var(--line); border-radius: .4rem; padding: .6rem .8rem; margin-bottom: 1rem; }
-  .change-head { display: flex; gap: .5rem; align-items: flex-start; }
+  .change-head { display: flex; gap: .5rem; align-items: flex-start; background: var(--head-bg); margin: -.6rem -.8rem 0; padding: .6rem .8rem; border-radius: .35rem .35rem 0 0; }
+  .change.folded > .change-head { margin-bottom: -.6rem; border-radius: .35rem; }
   .change-head .where { display: block; }
   .changed-text { display: block; font-weight: 600; margin-top: .1rem; }
   .arrow { color: var(--dim); font-weight: 400; }
@@ -94,17 +102,29 @@ _TEMPLATE = r"""<!doctype html>
 <div class="layout">
   <main>
     <div class="toolbar">
-      <button type="button" id="select-all">Select all</button>
-      <button type="button" id="select-none">Select none</button>
+      <span class="group-of">
+        <button type="button" id="select-all">Select all</button>
+        <button type="button" id="select-none">Select none</button>
+      </span>
+      <span class="group-of">
+        <button type="button" id="expand-all">Expand all</button>
+        <button type="button" id="collapse-all">Collapse all</button>
+      </span>
+      <label>Min confidence
+        <input type="range" id="min-confidence" min="0" max="1" step="0.05" value="0">
+        <output id="min-confidence-value" class="mono">0.00</output>
+      </label>
+      <label><input type="checkbox" id="exact-only"> Exact, case-sensitive matches only</label>
       <span id="counts" class="dim"></span>
     </div>
     <div id="changes"></div>
+    <p id="filtered-out" class="dim" hidden>No entry passes the filters.</p>
     <div id="unmatched"></div>
   </main>
   <aside class="side">
     <section class="pane">
-      <div class="head"><h2>Invocations</h2><button type="button" id="copy-invocations">Copy</button></div>
-      <pre id="invocations"></pre>
+      <div class="head"><h2>Invocations</h2><button type="button" id="copy-invocations">Copy all</button></div>
+      <div id="invocations" class="invocation-list"></div>
       <div id="invocations-notes"></div>
     </section>
     <section class="pane">
@@ -117,9 +137,23 @@ _TEMPLATE = r"""<!doctype html>
 <script>
 "use strict";
 /* logic:start */
-function entriesOf(model) {
+// The report-level filters: a confidence cutoff and "exact, case-sensitive matches only".
+// Entries failing them are hidden and count for nothing -- not the selection, the prompt or
+// the invocations. The epsilon keeps an entry at 0.8 visible when the slider says 0.8.
+const NO_FILTER = { minConfidence: 0, exactOnly: false };
+
+function passesFilter(entry, filter) {
+  if (entry.confidence < filter.minConfidence - 1e-9) return false;
+  return !filter.exactOnly || entry.exact;
+}
+
+function visibleEntries(entries, filter = NO_FILTER) {
+  return entries.filter((entry) => passesFilter(entry, filter));
+}
+
+function entriesOf(model, filter = NO_FILTER) {
   const out = [];
-  for (const change of model.changes) for (const group of change.groups) for (const entry of group.entries) out.push(entry);
+  for (const change of model.changes) for (const group of change.groups) out.push(...visibleEntries(group.entries, filter));
   return out;
 }
 
@@ -136,13 +170,13 @@ function setSelected(entries, off, selected) {
   }
 }
 
-function selectedEntries(model, off) {
-  return entriesOf(model).filter((entry) => !off.has(entry.id));
+function selectedEntries(model, off, filter = NO_FILTER) {
+  return entriesOf(model, filter).filter((entry) => !off.has(entry.id));
 }
 
-function promptText(model, off) {
+function promptText(model, off, filter = NO_FILTER) {
   const lines = [];
-  for (const entry of selectedEntries(model, off)) {
+  for (const entry of selectedEntries(model, off, filter)) {
     if (entry.prompt_line !== null && !lines.includes(entry.prompt_line)) lines.push(entry.prompt_line);
   }
   return lines.length ? [model.preamble, ...lines].join("\n") : "";
@@ -150,9 +184,9 @@ function promptText(model, off) {
 
 // The cases whose `/test-e2e` lines are wanted: those of selected entries that clear the
 // result's own min_invocation_confidence, so the pane agrees with the server's initial answer.
-function invocationCaseIds(model, off) {
+function invocationCaseIds(model, off, filter = NO_FILTER) {
   const ids = new Set();
-  for (const entry of selectedEntries(model, off)) {
+  for (const entry of selectedEntries(model, off, filter)) {
     if (entry.confidence >= model.recompute.min_invocation_confidence) ids.add(entry.case_id);
   }
   return [...ids].sort((a, b) => a - b);
@@ -182,7 +216,11 @@ function parseDeselected(raw, model) {
 
 const model = JSON.parse(document.getElementById("report-data").textContent);
 const off = parseDeselected(readStorage(), model);
+const filter = { ...NO_FILTER };
 const checkboxes = []; // {box, entries}, refreshed on every change
+const scopes = []; // {node, entries}: hidden while none of its entries passes the filter
+const counters = []; // {span, count, singular, plural}: fold counts of what is visible
+const folds = []; // {host, sync}, for expand/collapse all
 
 function readStorage() {
   try { return localStorage.getItem(model.storage_key); } catch (e) { return null; }
@@ -208,7 +246,7 @@ function link(url, ...children) {
 function selector(entries) {
   const box = el("input", { type: "checkbox" });
   box.addEventListener("change", () => {
-    setSelected(entries, off, box.checked);
+    setSelected(visibleEntries(entries, filter), off, box.checked);
     onSelectionChanged();
   });
   checkboxes.push({ box, entries });
@@ -224,11 +262,25 @@ function foldToggle(host, folded) {
   host.classList.toggle("folded", folded);
   button.addEventListener("click", () => { host.classList.toggle("folded"); sync(); });
   sync();
+  folds.push({ host, sync });
   return button;
 }
 
-function foldCount(n, singular, plural) {
-  return el("span", { class: "fold-count" }, "(" + n + " " + (n === 1 ? singular : plural) + ")");
+function setAllFolds(folded) {
+  for (const { host, sync } of folds) { host.classList.toggle("folded", folded); sync(); }
+}
+
+// `count()` is re-evaluated on every refresh, since the filters change what is visible.
+function foldCount(count, singular, plural) {
+  const span = el("span", { class: "fold-count" });
+  counters.push({ span, count, singular, plural });
+  return span;
+}
+
+// `node` is hidden while none of `entries` passes the filters.
+function scoped(node, entries) {
+  scopes.push({ node, entries });
+  return node;
 }
 
 function renderEntry(entry) {
@@ -242,10 +294,17 @@ function renderEntry(entry) {
     "div",
     { class: "lines" },
     tags,
-    el("div", {}, link(entry.case_url, "C" + entry.case_id + " " + entry.scenario_name), " ", link(entry.step_url, el("span", { class: "dim" }, "L" + entry.line))),
+    el(
+      "div",
+      {},
+      link(entry.case_url, "C" + entry.case_id + " " + entry.scenario_name),
+      " ",
+      link(entry.step_url, el("span", { class: "dim" }, "L" + entry.line)),
+      el("span", { class: "dim", title: entry.exact ? "Exact, case-sensitive match" : "Not an exact, case-sensitive match" }, " · " + entry.confidence.toFixed(2) + (entry.exact ? "" : " ~"))
+    ),
     link(entry.step_url, step)
   );
-  return el("div", { class: "entry" }, selector([entry]), lines);
+  return scoped(el("div", { class: "entry" }, selector([entry]), lines), [entry]);
 }
 
 function renderGroup(group) {
@@ -256,10 +315,10 @@ function renderGroup(group) {
     foldToggle(host, true),
     selector(group.entries),
     link(group.feature_url, el("span", { class: "mono" }, group.file)),
-    foldCount(group.entries.length, "entry", "entries")
+    foldCount(() => visibleEntries(group.entries, filter).length, "entry", "entries")
   );
   host.append(head, el("div", { class: "children" }, ...group.entries.map(renderEntry)));
-  return host;
+  return scoped(host, group.entries);
 }
 
 function renderChange(change) {
@@ -274,10 +333,16 @@ function renderChange(change) {
     { class: "change-head" },
     foldToggle(host, false),
     selector(all),
-    el("div", {}, where, text, foldCount(change.groups.length, "feature file", "feature files"))
+    el(
+      "div",
+      {},
+      where,
+      text,
+      foldCount(() => change.groups.filter((group) => visibleEntries(group.entries, filter).length).length, "feature file", "feature files")
+    )
   );
   host.append(head, el("div", { class: "children" }, ...change.groups.map(renderGroup)));
-  return host;
+  return scoped(host, all);
 }
 
 function renderUnmatched() {
@@ -295,8 +360,8 @@ function renderMeta() {
   const m = model.meta;
   const meta = document.getElementById("meta");
   meta.append(link(m.literals_url, m.literals_repo), " ");
-  meta.append(m.pr_number !== null ? "PR #" + m.pr_number : m.base_ref.slice(0, 12) + "…" + m.updated_ref.slice(0, 12));
-  meta.append(" · tests ", link(m.test_url, m.test_repo), " @ " + m.test_sha.slice(0, 12));
+  meta.append(link(m.literals_ref_url, m.pr_number !== null ? "PR #" + m.pr_number : m.base_ref.slice(0, 12) + "…" + m.updated_ref.slice(0, 12)));
+  meta.append(" · tests ", link(m.test_url, m.test_repo), " @ ", link(m.test_sha_url, m.test_sha.slice(0, 12)));
 }
 
 // --- the two panes -----------------------------------------------------------------------
@@ -304,10 +369,20 @@ let invocationTimer = null;
 let invocationRequest = 0;
 const initialCaseIds = invocationCaseIds(model, new Set()).join(",");
 
+let currentCommands = [];
+
+// One block per `/test-e2e` line, each with a copy button of its own.
 function showInvocations(stanza, failure) {
   const notes = document.getElementById("invocations-notes");
   notes.replaceChildren();
-  document.getElementById("invocations").textContent = stanza ? stanza.commands.join("\n") : "";
+  currentCommands = stanza ? stanza.commands : [];
+  document.getElementById("invocations").replaceChildren(
+    ...currentCommands.map((command) => {
+      const button = el("button", { type: "button" }, "Copy");
+      button.addEventListener("click", () => copyText(command, button, "Copy"));
+      return el("div", { class: "invocation" }, el("pre", {}, command), button);
+    })
+  );
   if (failure) notes.append(el("p", { class: "error" }, failure));
   if (!stanza) return;
   for (const text of stanza.warnings) notes.append(el("p", { class: "warn" }, text));
@@ -315,7 +390,7 @@ function showInvocations(stanza, failure) {
 }
 
 function updateInvocations() {
-  const caseIds = invocationCaseIds(model, off);
+  const caseIds = invocationCaseIds(model, off, filter);
   clearTimeout(invocationTimer);
   const ticket = ++invocationRequest;
   if (caseIds.length === 0) { showInvocations({ commands: [], warnings: [], uncovered: [] }); return; }
@@ -338,15 +413,24 @@ function updateInvocations() {
 
 function refresh() {
   for (const { box, entries } of checkboxes) {
-    const state = selectionState(entries, off);
+    const shown = visibleEntries(entries, filter);
+    const state = shown.length ? selectionState(shown, off) : "none";
     box.checked = state === "all";
     box.indeterminate = state === "some";
   }
-  const all = entriesOf(model);
-  const chosen = selectedEntries(model, off);
+  for (const { node, entries } of scopes) node.hidden = visibleEntries(entries, filter).length === 0;
+  for (const { span, count, singular, plural } of counters) {
+    const n = count();
+    span.textContent = "(" + n + " " + (n === 1 ? singular : plural) + ")";
+  }
+  const everything = entriesOf(model);
+  const all = entriesOf(model, filter);
+  const chosen = selectedEntries(model, off, filter);
   document.getElementById("counts").textContent =
-    chosen.length + " of " + all.length + " entries selected · " + new Set(chosen.map((e) => e.case_id)).size + " cases";
-  document.getElementById("prompt").textContent = promptText(model, off) || "(nothing selected)";
+    chosen.length + " of " + all.length + " entries selected · " + new Set(chosen.map((e) => e.case_id)).size + " cases" +
+    (all.length < everything.length ? " · " + (everything.length - all.length) + " filtered out" : "");
+  document.getElementById("prompt").textContent = promptText(model, off, filter) || "(nothing selected)";
+  document.getElementById("filtered-out").hidden = !(everything.length && !all.length);
 }
 
 function onSelectionChanged() {
@@ -355,23 +439,33 @@ function onSelectionChanged() {
   updateInvocations();
 }
 
-async function copyText(text, button) {
+async function copyText(text, button, label) {
   try {
     await navigator.clipboard.writeText(text);
     button.textContent = "Copied";
   } catch (e) {
     button.textContent = "Select and copy manually";
   }
-  setTimeout(() => { button.textContent = "Copy"; }, 1500);
+  setTimeout(() => { button.textContent = label; }, 1500);
+}
+
+function onFilterChanged() {
+  document.getElementById("min-confidence-value").textContent = filter.minConfidence.toFixed(2);
+  refresh();
+  updateInvocations();
 }
 
 renderMeta();
 document.getElementById("changes").append(...model.changes.map(renderChange));
 renderUnmatched();
-document.getElementById("select-all").addEventListener("click", () => { setSelected(entriesOf(model), off, true); onSelectionChanged(); });
-document.getElementById("select-none").addEventListener("click", () => { setSelected(entriesOf(model), off, false); onSelectionChanged(); });
-document.getElementById("copy-invocations").addEventListener("click", (event) => copyText(document.getElementById("invocations").textContent, event.target));
-document.getElementById("copy-prompt").addEventListener("click", (event) => copyText(promptText(model, off), event.target));
+document.getElementById("select-all").addEventListener("click", () => { setSelected(entriesOf(model, filter), off, true); onSelectionChanged(); });
+document.getElementById("select-none").addEventListener("click", () => { setSelected(entriesOf(model, filter), off, false); onSelectionChanged(); });
+document.getElementById("expand-all").addEventListener("click", () => setAllFolds(false));
+document.getElementById("collapse-all").addEventListener("click", () => setAllFolds(true));
+document.getElementById("min-confidence").addEventListener("input", (event) => { filter.minConfidence = Number(event.target.value); onFilterChanged(); });
+document.getElementById("exact-only").addEventListener("change", (event) => { filter.exactOnly = event.target.checked; onFilterChanged(); });
+document.getElementById("copy-invocations").addEventListener("click", (event) => copyText(currentCommands.join("\n"), event.target, "Copy all"));
+document.getElementById("copy-prompt").addEventListener("click", (event) => copyText(promptText(model, off, filter), event.target, "Copy"));
 if (!model.changes.length) document.getElementById("changes").append(el("p", { class: "dim" }, "No removed product string matches a test step."));
 refresh();
 updateInvocations();
