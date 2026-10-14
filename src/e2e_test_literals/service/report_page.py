@@ -114,7 +114,7 @@ _TEMPLATE = r"""<!doctype html>
         <input type="range" id="min-confidence" min="0" max="1" step="0.05" value="0">
         <output id="min-confidence-value" class="mono">0.00</output>
       </label>
-      <label><input type="checkbox" id="exact-only"> Exact, case-sensitive matches only</label>
+      <label><input type="checkbox" id="exact-only" checked> Exact, case-sensitive matches only</label>
       <span id="counts" class="dim"></span>
     </div>
     <div id="changes"></div>
@@ -216,7 +216,7 @@ function parseDeselected(raw, model) {
 
 const model = JSON.parse(document.getElementById("report-data").textContent);
 const off = parseDeselected(readStorage(), model);
-const filter = { ...NO_FILTER };
+const filter = { ...NO_FILTER, exactOnly: document.getElementById("exact-only").checked }; // the page starts with exact-only ticked
 const checkboxes = []; // {box, entries}, refreshed on every change
 const scopes = []; // {node, entries}: hidden while none of its entries passes the filter
 const counters = []; // {span, count, singular, plural}: fold counts of what is visible
