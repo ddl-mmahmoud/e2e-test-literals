@@ -16,7 +16,7 @@ from html import escape
 from . import impact
 
 DEFAULT_TEST_REPO = "https://github.com/cerebrotech/internal-e2e-tests-service"
-DEFAULT_LITERALS_REPO = "https://github.com/cerebrotech/frontend-web-ui-service"
+DEFAULT_LITERALS_REPO = "https://github.com/cerebrotech/domino"
 
 
 def render_form() -> str:
