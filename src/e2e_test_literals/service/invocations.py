@@ -23,6 +23,7 @@ import math
 import re
 import sqlite3
 
+from .profiling import COMPUTING_INVOCATIONS, OPTIMIZING_INVOCATION_TAGS, PhaseTracker, track
 from .tag_planning import TagSelectionError, plan_tag_selection
 
 DEFAULT_MAX_LENGTH = 300
@@ -264,6 +265,7 @@ def recommend_invocations(
     domains: tuple[str, ...] = ("ui",),
     extra_cases_allowed: int | None = None,
     missing_cases_allowed: int | None = None,
+    tracker: PhaseTracker | None = None,
 ) -> dict:
     """The `recommended_invocations` stanza of a `/changed-literals-impact` result for
     `case_ids`, from the per-revision db at `db_file`:
@@ -285,60 +287,69 @@ def recommend_invocations(
     every structured dict gains `extra_cases`, the case IDs its tags run beyond the batch.
     Test types that also run API tests keep plain tags. If no selection fits the bounds,
     the plain-tag lines are returned and `warnings` carries the achievable minima.
+
+    With a `tracker`, choosing the invocations is its `computing_invocations` phase and the
+    tag substitution its `optimizing_invocation_tags` phase (never started if substitution is
+    off).
     """
-    wanted = sorted({int(case_id) for case_id in case_ids})
-    stanza: dict = {"commands": [], "structured": [], "uncovered": [], "warnings": []}
-    if not wanted:
-        return stanza
-    substituting = extra_cases_allowed is not None or missing_cases_allowed is not None
-
-    conn = sqlite3.connect(db_file)
-    try:
-        try:
-            meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
-        except sqlite3.OperationalError:
-            meta = {}
-        if meta.get("routing_indexed") != "1":
-            reason = meta.get("routing_error") or "routing data was not indexed for this revision"
-            stanza["warnings"].append(f"no invocation recommendations: {reason}")
+    with track(tracker, COMPUTING_INVOCATIONS):
+        wanted = sorted({int(case_id) for case_id in case_ids})
+        stanza: dict = {"commands": [], "structured": [], "uncovered": [], "warnings": []}
+        if not wanted:
             return stanza
-        entries_by_case = _load_entries(conn, domains, wanted)
-        # The tag universe spans every UI scenario, not just the batch: a shared tag is only
-        # safe to use if we know everything else it would run.
-        ui_entries = (
-            [entry for entries in _load_entries(conn, ("ui",)).values() for entry in entries] if substituting else []
-        )
-        api_test_types = _api_test_types(conn) if substituting else set()
-    finally:
-        conn.close()
+        substituting = extra_cases_allowed is not None or missing_cases_allowed is not None
 
-    requirements = []
-    for case_id in wanted:
-        entries = entries_by_case.get(case_id)
-        if not entries:
-            stanza["uncovered"].append(f"{case_id}: no @testrail({case_id}) entry found in the indexed test repo")
-            continue
-        for entry in entries:
-            keys = _requirement_keys(entry["candidates"])
-            if not keys:
-                stanza["uncovered"].append(
-                    f"{case_id}: {entry['file']}::{entry['name']} only selectable via --vcluster or "
-                    "--run_core_workflow, which are not recommended"
-                )
+        conn = sqlite3.connect(db_file)
+        try:
+            try:
+                meta = dict(conn.execute("SELECT key, value FROM meta").fetchall())
+            except sqlite3.OperationalError:
+                meta = {}
+            if meta.get("routing_indexed") != "1":
+                reason = meta.get("routing_error") or "routing data was not indexed for this revision"
+                stanza["warnings"].append(f"no invocation recommendations: {reason}")
+                return stanza
+            entries_by_case = _load_entries(conn, domains, wanted)
+            # The tag universe spans every UI scenario, not just the batch: a shared tag is only
+            # safe to use if we know everything else it would run.
+            ui_entries = (
+                [entry for entries in _load_entries(conn, ("ui",)).values() for entry in entries]
+                if substituting
+                else []
+            )
+            api_test_types = _api_test_types(conn) if substituting else set()
+        finally:
+            conn.close()
+
+        requirements = []
+        for case_id in wanted:
+            entries = entries_by_case.get(case_id)
+            if not entries:
+                stanza["uncovered"].append(f"{case_id}: no @testrail({case_id}) entry found in the indexed test repo")
                 continue
-            requirements.append({"case_id": case_id, "keys": keys})
+            for entry in entries:
+                keys = _requirement_keys(entry["candidates"])
+                if not keys:
+                    stanza["uncovered"].append(
+                        f"{case_id}: {entry['file']}::{entry['name']} only selectable via --vcluster or "
+                        "--run_core_workflow, which are not recommended"
+                    )
+                    continue
+                requirements.append({"case_id": case_id, "keys": keys})
 
-    minimized = _minimize_invocations(requirements)
+        minimized = _minimize_invocations(requirements)
+
     substitutions = universes = None
     if substituting:
-        try:
-            substitutions, universes, exhausted = _substitute_tags(
-                minimized, ui_entries, api_test_types, extra_cases_allowed, missing_cases_allowed
-            )
-        except TagSelectionError as exc:
-            stanza["warnings"].append(f"tag substitution not applied, using testrail(N) tags: {exc}")
-        else:
-            if exhausted:
-                stanza["warnings"].append("tag search hit its node limit; the tag selection may not be minimal")
+        with track(tracker, OPTIMIZING_INVOCATION_TAGS):
+            try:
+                substitutions, universes, exhausted = _substitute_tags(
+                    minimized, ui_entries, api_test_types, extra_cases_allowed, missing_cases_allowed
+                )
+            except TagSelectionError as exc:
+                stanza["warnings"].append(f"tag substitution not applied, using testrail(N) tags: {exc}")
+            else:
+                if exhausted:
+                    stanza["warnings"].append("tag search hit its node limit; the tag selection may not be minimal")
     stanza["commands"], stanza["structured"] = _render(minimized, max_length, substitutions, universes)
     return stanza

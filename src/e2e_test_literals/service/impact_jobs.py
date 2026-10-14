@@ -2,7 +2,7 @@
 
 Same in-memory job/thread shape as `jobs.py` (no separate worker process/broker, no
 persistence across a restart, `status` only ever moves forward: pending -> running ->
-done|error). Kept as its own registry rather than reusing `jobs.py`'s, since these jobs
+done|error; the finer-grained `phase` within "running" is `ImpactJob.tracker`'s). Kept as its own registry rather than reusing `jobs.py`'s, since these jobs
 carry a different result payload (a full impact-check `dict`, see `impact.py`) than a
 revision-build job (just a `sha`).
 """
@@ -19,6 +19,7 @@ from ..repo_checkout import GitError
 from . import config
 from .changed_literals_client import ChangedLiteralsError
 from .impact import compute_impact
+from .profiling import PHASES, PhaseTracker
 
 
 @dataclasses.dataclass
@@ -28,6 +29,9 @@ class ImpactJob:
     created_at: float
     result: dict | None = None
     error: str | None = None
+    # Which phase the job is in and how long each has taken (see profiling.py); the status
+    # body reports it, and it stays readable after the job ends.
+    tracker: PhaseTracker = dataclasses.field(default_factory=lambda: PhaseTracker(PHASES))
 
 
 _jobs_lock = threading.Lock()
@@ -58,7 +62,9 @@ def _run_job(
     pr_number: int | None,
 ) -> None:
     with _jobs_lock:
-        _jobs[job_id].status = "running"
+        job = _jobs[job_id]
+        job.status = "running"
+    tracker = job.tracker
 
     try:
         result = compute_impact(
@@ -74,6 +80,7 @@ def _run_job(
             extra_cases_allowed,
             missing_cases_allowed,
             pr_number=pr_number,
+            tracker=tracker,
         )
     except (GitError, ChangedLiteralsError) as exc:
         print(f"impact job {job_id} failed ({type(exc).__name__}): {exc}")
@@ -85,14 +92,14 @@ def _run_job(
         traceback.print_exc()
         error = "internal error"
     else:
+        tracker.finish()
         with _jobs_lock:
-            job = _jobs[job_id]
             job.status = "done"
             job.result = result
         return
 
+    tracker.finish()
     with _jobs_lock:
-        job = _jobs[job_id]
         job.status = "error"
         job.error = error
 

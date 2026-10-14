@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sqlite3
+import time
 import uuid
 
 import filelock
@@ -22,6 +23,7 @@ from .. import index_from_git
 from ..db import write_sqlite
 from ..repo_checkout import resolve_commit_sha
 from . import config
+from .profiling import POPULATING_TEST_DB, RESOLVING_TEST_REVISION, PhaseTracker, track
 
 
 def repo_cache_path(repo_url: str):
@@ -63,7 +65,9 @@ def _repo_lock_path(repo_url: str):
     return config.LOCK_DIR / f"repo-{digest}.lock"
 
 
-def resolve_and_generate(repo_url: str, ref: str, *, skip_templated: bool = False) -> str:
+def resolve_and_generate(
+    repo_url: str, ref: str, *, skip_templated: bool = False, tracker: PhaseTracker | None = None
+) -> str:
     """Resolve `ref` to a commit SHA, ensure `db_path(sha)` exists (building it if this
     is the first request for that SHA), and return the SHA.
 
@@ -88,21 +92,38 @@ def resolve_and_generate(repo_url: str, ref: str, *, skip_templated: bool = Fals
     every caller, concurrent callers here are simply serialized through resolution.
     Resolution (a fetch + rev-parse) is cheap next to the actual build, so this costs
     little even when two different SHAs of the same repo are requested at once.
+
+    With a `tracker` the two stages are its `resolving_test_revision` and
+    `populating_test_db` phases, noting the caches they consulted: the repo's bare clone
+    (`repo_clone`: hit/miss) and the sha's db (`test_db`: hit, miss, or invalidated -- built
+    under an older schema). The latter also notes `lock_wait_seconds`, how long this call
+    waited on another build of the same sha, which a "hit" can owe all its time to.
     """
     cache = repo_cache_path(repo_url)
 
     config.LOCK_DIR.mkdir(parents=True, exist_ok=True)
     config.DB_DIR.mkdir(parents=True, exist_ok=True)
 
-    with filelock.FileLock(str(_repo_lock_path(repo_url))):
-        sha = resolve_commit_sha(repo_url, ref, cache)
+    with track(tracker, RESOLVING_TEST_REVISION) as phase:
+        phase.caches["repo_clone"] = "hit" if cache.exists() and any(cache.iterdir()) else "miss"
+        with filelock.FileLock(str(_repo_lock_path(repo_url))):
+            sha = resolve_commit_sha(repo_url, ref, cache)
 
-    with filelock.FileLock(str(_lock_path(sha))):
-        out_path = db_path(sha)
-        if not out_path.exists() or not _is_current_schema(out_path):
-            result = index_from_git(repo_url, sha, repo_cache=cache, skip_templated=skip_templated)
-            tmp_path = config.DB_DIR / f"{sha}.sqlite.tmp-{uuid.uuid4().hex}"
-            write_sqlite(result.cases, tmp_path, routing=result.routing_entries, routing_error=result.routing_error)
-            os.replace(tmp_path, out_path)
+    with track(tracker, POPULATING_TEST_DB) as phase:
+        lock_requested = time.monotonic()
+        with filelock.FileLock(str(_lock_path(sha))):
+            phase.extra["lock_wait_seconds"] = round(time.monotonic() - lock_requested, 3)
+            out_path = db_path(sha)
+            if not out_path.exists():
+                phase.caches["test_db"] = "miss"
+            elif not _is_current_schema(out_path):
+                phase.caches["test_db"] = "invalidated"
+            else:
+                phase.caches["test_db"] = "hit"
+            if phase.caches["test_db"] != "hit":
+                result = index_from_git(repo_url, sha, repo_cache=cache, skip_templated=skip_templated)
+                tmp_path = config.DB_DIR / f"{sha}.sqlite.tmp-{uuid.uuid4().hex}"
+                write_sqlite(result.cases, tmp_path, routing=result.routing_entries, routing_error=result.routing_error)
+                os.replace(tmp_path, out_path)
 
     return sha

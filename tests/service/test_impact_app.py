@@ -329,3 +329,55 @@ def test_invocations_reject_a_test_sha_that_is_not_a_plain_hex_sha(impact_client
     resp = impact_client.post("/changed-literals-impact/invocations", json={"test_sha": test_sha, "case_ids": [1]})
 
     assert resp.status_code == 422
+
+
+def test_status_reports_phase_and_profiling_while_running_and_when_done(impact_client: TestClient, monkeypatch):
+    release = threading.Event()
+    entered = threading.Event()
+
+    def fake_compute(*a, tracker, **k):
+        with tracker.phase("populating_test_db") as phase:
+            phase.caches["test_db"] = "hit"
+        with tracker.phase("matching_literals"):
+            entered.set()
+            release.wait(5)
+        return {"total": 0, "findings": []}
+
+    monkeypatch.setattr(impact_jobs, "compute_impact", fake_compute)
+    create_body = impact_client.post("/changed-literals-impact", json=_REQUEST_BODY).json()
+    job_id = create_body["job_id"]
+    assert create_body["phase"] == "queued"
+    assert set(create_body["profiling"]["phases"].values()) == {None}
+
+    assert entered.wait(5)
+    running = impact_client.get(f"/changed-literals-impact/jobs/{job_id}").json()
+    release.set()
+    done = _await_job(impact_client, job_id)
+
+    assert running["status"] == "running"
+    assert running["phase"] == "matching_literals"
+    assert running["profiling"]["phases"]["populating_test_db"]["caches"] == {"test_db": "hit"}
+    assert running["profiling"]["phases"]["matching_literals"]["state"] == "running"
+    assert running["profiling"]["phases"]["computing_invocations"] is None
+    assert done["phase"] == "done"
+    assert done["profiling"]["phases"]["matching_literals"]["state"] == "done"
+    assert done["profiling"]["phases"]["computing_invocations"] is None  # this fake never got that far
+    # Final figures: the total no longer grows once the job is done.
+    assert impact_client.get(f"/changed-literals-impact/jobs/{job_id}").json()["profiling"]["total_seconds"] == (
+        done["profiling"]["total_seconds"]
+    )
+
+
+def test_status_marks_the_phase_an_error_job_failed_in(impact_client: TestClient, monkeypatch):
+    def fake_compute(*a, tracker, **k):
+        with tracker.phase("populating_test_db"):
+            raise ChangedLiteralsError("boom")
+
+    monkeypatch.setattr(impact_jobs, "compute_impact", fake_compute)
+    job_id = impact_client.post("/changed-literals-impact", json=_REQUEST_BODY).json()["job_id"]
+
+    status = _await_job(impact_client, job_id)
+
+    assert status["status"] == "error"
+    assert status["phase"] == "error"
+    assert status["profiling"]["phases"]["populating_test_db"]["state"] == "failed"

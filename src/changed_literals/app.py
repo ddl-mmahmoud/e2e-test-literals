@@ -17,7 +17,10 @@ rather than one endpoint that blocks the caller until it's done:
   GET /changed-literals/jobs/<job_id>
              -> job status: pending | running | done | error. Once the refs are known
                 (immediately, or after a "pr" is resolved) it also carries the "base"
-                and "updated" they resolved to.
+                and "updated" they resolved to. "phase" names what the job is doing
+                (queued | resolving_pull_request | fetching_literals_repo |
+                analyzing_literals_diff | done | error), and "profiling" how long each
+                phase has taken (see profiling.py), including which caches it hit.
 
   GET /changed-literals/jobs/<job_id>/result
              [?offset=0&limit=200]
@@ -88,6 +91,14 @@ from changed_literals.finding import Finding
 from changed_literals.git_ops import GitError
 from changed_literals.github import resolve_pull_request
 from changed_literals.languages import PATHSPECS
+from changed_literals.profiling import (
+    ANALYZING_LITERALS_DIFF,
+    FETCHING_LITERALS_REPO,
+    PHASES,
+    RESOLVING_PULL_REQUEST,
+    PhaseTracker,
+    track,
+)
 
 # Fixed, not DOMINO_RUN_HOST_PATH-derived -- unlike e2e_test_literals.service's own
 # PREFIX, this process is never reached directly through Domino's ingress (only
@@ -161,17 +172,32 @@ def _cached_findings(
     *,
     force_refresh: bool,
     pull_request: int | None = None,
+    tracker: PhaseTracker | None = None,
 ) -> list[Finding]:
     key = _cache_key(repo, base, updated, languages)
 
+    findings_cache = "bypassed"
     if not force_refresh:
         with _cache_lock:
             entry = _cache.get(key)
         if entry is not None and time.time() - entry["computed_at"] < CACHE_TTL_SECONDS:
+            if tracker is not None:
+                # Both phases were covered by the cached result.
+                tracker.skip(FETCHING_LITERALS_REPO, findings="hit")
+                tracker.skip(ANALYZING_LITERALS_DIFF, findings="hit")
             return entry["findings"]
+        findings_cache = "miss" if entry is None else "expired"
 
+    if tracker is not None:
+        tracker.ambient_caches["findings"] = findings_cache
     findings = extract(
-        repo, base, updated, languages, repo_cache=_repo_cache_path(repo), pull_request=pull_request
+        repo,
+        base,
+        updated,
+        languages,
+        repo_cache=_repo_cache_path(repo),
+        pull_request=pull_request,
+        tracker=tracker,
     )
 
     with _cache_lock:
@@ -199,6 +225,7 @@ class Job:
     updated: str | None = None
     findings: list[Finding] | None = None
     error: str | None = None
+    tracker: PhaseTracker = dataclasses.field(default_factory=lambda: PhaseTracker(PHASES))
 
 
 _jobs_lock = threading.Lock()
@@ -223,18 +250,21 @@ def _run_job(
     refresh: bool,
 ) -> None:
     with _jobs_lock:
-        _jobs[job_id].status = "running"
+        job = _jobs[job_id]
+        job.status = "running"
+    tracker = job.tracker
 
     try:
         if pr is not None:
             # Resolved on every job, not cached: a PR's head moves as it's pushed to,
             # and the findings cache below is keyed on the resulting SHAs anyway.
-            base, updated = resolve_pull_request(repo, pr)
+            with track(tracker, RESOLVING_PULL_REQUEST):
+                base, updated = resolve_pull_request(repo, pr)
         assert base is not None and updated is not None  # JobRequest guarantees one mode
         with _jobs_lock:
             _jobs[job_id].base, _jobs[job_id].updated = base, updated
         findings = _cached_findings(
-            repo, base, updated, languages, force_refresh=refresh, pull_request=pr
+            repo, base, updated, languages, force_refresh=refresh, pull_request=pr, tracker=tracker
         )
     except GitError as exc:
         error = str(exc)
@@ -246,14 +276,14 @@ def _run_job(
         traceback.print_exc()
         error = "internal error"
     else:
+        tracker.finish()
         with _jobs_lock:
-            job = _jobs[job_id]
             job.status = "done"
             job.findings = findings
         return
 
+    tracker.finish()
     with _jobs_lock:
-        job = _jobs[job_id]
         job.status = "error"
         job.error = error
 
@@ -283,8 +313,20 @@ def _job_result_path(job_id: str) -> str:
     return f"{PREFIX}jobs/{job_id}/result"
 
 
+def _job_phase(job: Job) -> str:
+    if job.status in ("done", "error"):
+        return job.status
+    return job.tracker.current or "queued"
+
+
 def _job_body(job: Job) -> dict:
-    body = {"job_id": job.id, "status": job.status, "status_url": _job_status_path(job.id)}
+    body = {
+        "job_id": job.id,
+        "status": job.status,
+        "phase": _job_phase(job),
+        "status_url": _job_status_path(job.id),
+        "profiling": job.tracker.snapshot(),
+    }
     if job.base is not None:
         body["base"], body["updated"] = job.base, job.updated
     if job.status == "error":

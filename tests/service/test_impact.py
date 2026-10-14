@@ -10,6 +10,7 @@ import pytest
 from e2e_test_literals.db import write_sqlite
 from e2e_test_literals.service import changed_literals_client as cl_client
 from e2e_test_literals.service import config, impact
+from e2e_test_literals.service.profiling import PHASES, PhaseTracker
 
 
 def _write_test_db(
@@ -96,7 +97,7 @@ def _stub_changed_literals(monkeypatch, findings: list[dict]) -> None:
 
 
 def test_matches_removed_literal_above_confidence(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     _stub_changed_literals(monkeypatch, [_finding()])
 
@@ -118,7 +119,7 @@ def test_matches_removed_literal_above_confidence(monkeypatch):
 
 
 def test_drops_findings_below_min_confidence(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     _stub_changed_literals(monkeypatch, [_finding(confidence=0.5)])
 
@@ -128,7 +129,7 @@ def test_drops_findings_below_min_confidence(monkeypatch):
 
 
 def test_added_findings_are_kept_unmatched_and_do_not_drive_invocations(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     added = _finding(change="added", text="Saved successfully", confidence=0.3)
     _stub_changed_literals(monkeypatch, [added])
@@ -142,7 +143,7 @@ def test_added_findings_are_kept_unmatched_and_do_not_drive_invocations(monkeypa
 
 
 def test_removed_finding_gets_its_added_counterpart_from_the_same_hunk(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     removed = _finding(text="Saved successfully", hunk=0)
     added = _finding(change="added", text="Saved!", line=11, hunk=0)
@@ -159,7 +160,7 @@ def test_removed_finding_gets_its_added_counterpart_from_the_same_hunk(monkeypat
 
 
 def test_a_string_removed_and_re_added_unchanged_in_one_hunk_is_not_reported(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     removed = _finding(text="Saved successfully", hunk=0)
     added = _finding(change="added", text="Saved successfully", line=11, hunk=0)
@@ -172,7 +173,7 @@ def test_a_string_removed_and_re_added_unchanged_in_one_hunk_is_not_reported(mon
 
 
 def test_removed_finding_with_no_substring_match_has_empty_match_list(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     _stub_changed_literals(monkeypatch, [_finding(text="Something unrelated")])
 
@@ -183,7 +184,7 @@ def test_removed_finding_with_no_substring_match_has_empty_match_list(monkeypatc
 
 
 def test_respects_custom_min_removal_confidence(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     _stub_changed_literals(monkeypatch, [_finding(confidence=0.6)])
 
@@ -201,7 +202,7 @@ def test_literal_longer_than_finding_text_never_matches(monkeypatch):
     # intended "does the finding's text contain this literal" semantics, and a
     # near-guaranteed spurious match for any literal that happens to share a common
     # word with the finding.
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", value="Access Forbidden")
     _stub_changed_literals(monkeypatch, [_finding(text="Access")])
 
@@ -214,7 +215,7 @@ def test_match_tolerates_minor_noise_above_confidence_floor(monkeypatch):
     # A single-character difference (here, a case change) still scores well above the
     # default floor -- the fuzzy match is meant to tolerate exactly this kind of minor
     # drift, unlike the old exact substring check.
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", value="Saved successfully")
     _stub_changed_literals(monkeypatch, [_finding(text="saved successfully (lowercase, different text)")])
 
@@ -238,7 +239,7 @@ def test_high_confidence_without_true_containment_never_matches(monkeypatch):
     # default confidence floor via partial_ratio alone (92.9%), but the literal never
     # actually occurs in the text -- containment is a hard gate, not just another signal
     # confidence can outweigh.
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", value="Delete project")
     _stub_changed_literals(monkeypatch, [_finding(text="prefix Delete prbject suffix text padding here")])
 
@@ -251,7 +252,7 @@ def test_short_literal_never_matches(monkeypatch):
     # Below _MIN_LITERAL_LENGTH_FOR_MATCHING, partial_ratio can only ever return 0 or
     # 100 -- no graded confidence to filter on -- so these are excluded outright rather
     # than auto-matching any text that happens to contain them.
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", value="OK")
     _stub_changed_literals(monkeypatch, [_finding(text="OK, continuing now")])
 
@@ -265,7 +266,7 @@ def test_respects_custom_min_literal_match_confidence(monkeypatch):
     # containment gate either way -- but the case mismatch still costs it confidence
     # points (86%, scaled by 0.8 to 0.69), so it only clears the default 0.7 floor once
     # that floor is loosened.
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", value="Delete Project")
     _stub_changed_literals(monkeypatch, [_finding(text="Are you sure you want to delete project now?")])
 
@@ -279,7 +280,7 @@ def test_respects_custom_min_literal_match_confidence(monkeypatch):
 
 
 def _matches(monkeypatch, *, value: str, string_kind: str, text: str, **compute_kwargs) -> list[dict]:
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", value=value, string_kind=string_kind)
     _stub_changed_literals(monkeypatch, [_finding(text=text)])
     result = impact.compute_impact("test-repo", "main", "product-repo", "base", "updated", **compute_kwargs)
@@ -374,7 +375,7 @@ def test_opaque_literal_never_matches(monkeypatch):
 
 
 def test_result_no_longer_echoes_a_match_method(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     _stub_changed_literals(monkeypatch, [_finding()])
 
@@ -384,7 +385,7 @@ def test_result_no_longer_echoes_a_match_method(monkeypatch):
 
 
 def test_raises_on_remote_job_error(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     monkeypatch.setattr(cl_client, "create_job", lambda repo, base, updated, **k: {"job_id": "job-1"})
     monkeypatch.setattr(cl_client, "get_job_status", lambda job_id, **k: {"status": "error", "error": "boom"})
@@ -411,7 +412,7 @@ def test_fetch_all_findings_follows_pagination(monkeypatch):
 
 
 def test_recommends_invocations_for_matched_cases(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])
     _stub_changed_literals(monkeypatch, [_finding()])
 
@@ -429,7 +430,7 @@ def test_recommends_invocations_for_matched_cases(monkeypatch):
 
 
 def test_no_invocations_when_nothing_matched(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])
     _stub_changed_literals(monkeypatch, [_finding(text="Something unrelated")])
 
@@ -440,7 +441,7 @@ def test_no_invocations_when_nothing_matched(monkeypatch):
 
 
 def test_min_invocation_confidence_uses_the_weaker_of_removal_and_match_confidence(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", case_id=1234, string_kind="button", routing=[_cucu_entry(1234)])
     # An exact match (match_confidence 1.0) in a removal changed-literals is only 0.9 sure of.
     _stub_changed_literals(monkeypatch, [_finding(confidence=0.9)])
@@ -462,7 +463,7 @@ def test_min_invocation_confidence_uses_the_weaker_of_removal_and_match_confiden
 
 
 def test_invocation_max_length_is_applied(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])
     _stub_changed_literals(monkeypatch, [_finding()])
 
@@ -476,7 +477,7 @@ def test_invocation_max_length_is_applied(monkeypatch):
 
 
 def test_warns_instead_of_recommending_when_the_revision_has_no_routing_data(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")  # routing=None, as for a revision whose routing files were absent
     _stub_changed_literals(monkeypatch, [_finding()])
 
@@ -488,7 +489,7 @@ def test_warns_instead_of_recommending_when_the_revision_has_no_routing_data(mon
 
 
 def test_tag_allowances_are_applied_to_the_recommendation(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])  # tagged `smoke`, nothing else is
     _stub_changed_literals(monkeypatch, [_finding()])
 
@@ -503,7 +504,7 @@ def test_tag_allowances_are_applied_to_the_recommendation(monkeypatch):
 
 
 def test_pr_number_is_passed_through_and_resolved_refs_are_reported(monkeypatch):
-    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref: "deadbeef")
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
     _write_test_db("deadbeef")
     _stub_changed_literals(monkeypatch, [])
     created = {}
@@ -521,3 +522,116 @@ def test_pr_number_is_passed_through_and_resolved_refs_are_reported(monkeypatch)
 
     assert created == {"repo": "product-repo", "base": None, "updated": None, "pr_number": 9}
     assert (result["base_ref"], result["updated_ref"], result["pr_number"]) == ("basesha", "headsha", 9)
+
+
+def _running_then_done_status(monkeypatch) -> None:
+    """changed-literals' status as first polled mid-way (fetching its repo), then done."""
+    polls = iter(
+        [
+            {
+                "status": "running",
+                "phase": "fetching_literals_repo",
+                "profiling": {
+                    "phases": {
+                        "resolving_pull_request": None,
+                        "fetching_literals_repo": {"state": "running", "seconds": 0.5, "caches": {"findings": "miss"}},
+                        "analyzing_literals_diff": None,
+                    }
+                },
+            },
+            {
+                "status": "done",
+                "phase": "done",
+                "profiling": {
+                    "phases": {
+                        "resolving_pull_request": None,
+                        "fetching_literals_repo": {
+                            "state": "done",
+                            "seconds": 2.0,
+                            "caches": {"findings": "miss", "repo_clone": "hit"},
+                        },
+                        "analyzing_literals_diff": {"state": "done", "seconds": 3.0, "caches": {"findings": "miss"}},
+                    }
+                },
+            },
+        ]
+    )
+    monkeypatch.setattr(cl_client, "get_job_status", lambda job_id, **k: next(polls))
+    monkeypatch.setattr(impact, "_POLL_INTERVAL_SECONDS", 0)
+
+
+def test_tracker_gets_every_phase_of_the_job_with_changed_literals_phases_adopted(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
+    _write_test_db("deadbeef")
+    _stub_changed_literals(monkeypatch, [_finding()])
+    _running_then_done_status(monkeypatch)
+    tracker = PhaseTracker(PHASES)
+
+    impact.compute_impact("test-repo", "main", "product-repo", "base", "updated", tracker=tracker)
+
+    phases = tracker.snapshot()["phases"]
+    assert phases["loading_test_literals"]["state"] == "done"
+    assert phases["fetching_literals_repo"] == {
+        "state": "done",
+        "seconds": 2.0,
+        "caches": {"findings": "miss", "repo_clone": "hit"},
+    }
+    assert phases["analyzing_literals_diff"]["seconds"] == 3.0
+    assert phases["matching_literals"]["state"] == "done"
+    assert phases["computing_invocations"]["state"] == "done"
+    # Not asked for, so never run (as is the pull request lookup for a job naming its refs).
+    assert phases["optimizing_invocation_tags"] is None
+    assert phases["resolving_pull_request"] is None
+
+
+def test_tag_substitution_is_its_own_phase_when_asked_for(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
+    _write_test_db("deadbeef", case_id=1234, routing=[_cucu_entry(1234)])
+    _stub_changed_literals(monkeypatch, [_finding()])
+    tracker = PhaseTracker(PHASES)
+
+    impact.compute_impact(
+        "test-repo", "main", "product-repo", "base", "updated", extra_cases_allowed=5, tracker=tracker
+    )
+
+    phases = tracker.snapshot()["phases"]
+    assert phases["computing_invocations"]["state"] == "done"
+    assert phases["optimizing_invocation_tags"]["state"] == "done"
+
+
+def test_a_changed_literals_failure_leaves_its_phase_failed_in_the_tracker(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
+    _write_test_db("deadbeef")
+    monkeypatch.setattr(cl_client, "create_job", lambda repo, base, updated, **k: {"job_id": "job-1"})
+    monkeypatch.setattr(
+        cl_client,
+        "get_job_status",
+        lambda job_id, **k: {
+            "status": "error",
+            "phase": "error",
+            "error": "boom",
+            "profiling": {"phases": {"fetching_literals_repo": {"state": "failed", "seconds": 0.1}}},
+        },
+    )
+    tracker = PhaseTracker(PHASES)
+
+    with pytest.raises(cl_client.ChangedLiteralsError):
+        impact.compute_impact("test-repo", "main", "product-repo", "base", "updated", tracker=tracker)
+
+    assert tracker.snapshot()["phases"]["fetching_literals_repo"]["state"] == "failed"
+    assert tracker.snapshot()["phases"]["matching_literals"] is None
+
+
+def test_tag_substitution_is_not_run_for_a_revision_without_routing_data(monkeypatch):
+    monkeypatch.setattr(impact, "resolve_and_generate", lambda repo, ref, **k: "deadbeef")
+    _write_test_db("deadbeef")  # routing=None
+    _stub_changed_literals(monkeypatch, [_finding()])
+    tracker = PhaseTracker(PHASES)
+
+    impact.compute_impact(
+        "test-repo", "main", "product-repo", "base", "updated", extra_cases_allowed=5, tracker=tracker
+    )
+
+    phases = tracker.snapshot()["phases"]
+    assert phases["computing_invocations"]["state"] == "done"
+    assert phases["optimizing_invocation_tags"] is None

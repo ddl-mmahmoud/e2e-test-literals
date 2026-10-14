@@ -70,7 +70,16 @@ it's done -- mirrors changed-literals' app.py:
                 met, plain tags are returned with an explanation in `warnings`.
 
   GET /changed-literals-impact/jobs/<job_id>[/result]
-             -> same job-status/result shape as /revisions/jobs/<job_id>[/result]. The result
+             -> same job-status/result shape as /revisions/jobs/<job_id>[/result], except that
+                the status also says what the job is doing and how long each part has taken:
+                "phase" (queued | resolving_test_revision | populating_test_db |
+                loading_test_literals | resolving_pull_request | fetching_literals_repo |
+                analyzing_literals_diff | matching_literals | computing_invocations |
+                optimizing_invocation_tags | done | error) and "profiling": {"total_seconds",
+                "phases": {<phase>: null if not run (yet), else {"state": running | done |
+                failed, "seconds", "caches": {<cache>: hit | miss | expired | invalidated |
+                bypassed | disabled}}}} -- see profiling.py. A running phase's seconds are
+                its time so far; on a done job they are the final figures. The result
                 holds every detected change (removed findings annotated with their matched
                 test literals and `replacements`, added ones as they are). With
                 `/result?report=1` it is served as the HTML impact report instead
@@ -301,8 +310,20 @@ def _impact_job_result_path(job_id: str) -> str:
     return f"{config.PREFIX}changed-literals-impact/jobs/{job_id}/result"
 
 
+def _impact_job_phase(job: impact_jobs.ImpactJob) -> str:
+    if job.status in ("done", "error"):
+        return job.status
+    return job.tracker.current or "queued"
+
+
 def _impact_job_body(job: impact_jobs.ImpactJob) -> dict:
-    body = {"job_id": job.id, "status": job.status, "status_url": _impact_job_status_path(job.id)}
+    body = {
+        "job_id": job.id,
+        "status": job.status,
+        "phase": _impact_job_phase(job),
+        "status_url": _impact_job_status_path(job.id),
+        "profiling": job.tracker.snapshot(),
+    }
     if job.status == "error":
         body["error"] = job.error
     if job.status == "done":

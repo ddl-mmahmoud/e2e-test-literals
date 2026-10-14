@@ -19,6 +19,7 @@ from . import changed_literals_client as cl_client
 from .generation import db_path, resolve_and_generate
 from .invocations import DEFAULT_MAX_LENGTH as DEFAULT_INVOCATION_MAX_LENGTH
 from .invocations import recommend_invocations
+from .profiling import FETCHING_LITERALS_REPO, LOADING_TEST_LITERALS, MATCHING_LITERALS, PhaseTracker, track
 from .replacements import attach_replacements, cancel_unchanged
 
 DEFAULT_MIN_REMOVAL_CONFIDENCE = 0.85
@@ -103,13 +104,18 @@ def _match_literals(
     return matches
 
 
-def _poll_changed_literals_job(job_id: str) -> dict:
+def _poll_changed_literals_job(job_id: str, tracker: PhaseTracker | None = None) -> dict:
     """Blocks (on this job's own worker thread, see impact_jobs.py) until the remote
     changed-literals job reaches done/error. No separate timeout of our own for now --
     matches this codebase's existing style of not imposing one on long-running
-    upstream work (e.g. proxy.py's streaming requests have none either)."""
+    upstream work (e.g. proxy.py's streaming requests have none either).
+
+    Each poll hands the remote job's phases to `tracker` (see `PhaseTracker.adopt`), so this
+    job's own status shows what changed-literals is up to while it is waited on."""
     while True:
         status = cl_client.get_job_status(job_id)
+        if tracker is not None:
+            tracker.adopt(status.get("phase"), status.get("profiling", {}).get("phases", {}))
         if status["status"] in ("done", "error"):
             return status
         time.sleep(_POLL_INTERVAL_SECONDS)
@@ -162,6 +168,7 @@ def compute_impact(
     extra_cases_allowed: int | None = None,
     missing_cases_allowed: int | None = None,
     pr_number: int | None = None,
+    tracker: PhaseTracker | None = None,
 ) -> dict:
     """The actual unit of work for a `POST /changed-literals-impact` job (see
     impact_jobs.py). Runs on the job's own worker thread; nothing here is async.
@@ -194,26 +201,34 @@ def compute_impact(
     GitHub pull request of `literals_repo` (then both refs are None): changed-literals
     resolves it to the PR's base and branch-tip SHAs, which the result reports as
     `base_ref`/`updated_ref`.
+
+    A `tracker` (see profiling.py) is told which phase the job is in and how long each took.
     """
-    test_sha = resolve_and_generate(test_repo, test_ref)
-    test_literals = _load_test_literals(test_sha)
+    test_sha = resolve_and_generate(test_repo, test_ref, tracker=tracker)
+    with track(tracker, LOADING_TEST_LITERALS):
+        test_literals = _load_test_literals(test_sha)
 
     created = cl_client.create_job(literals_repo, base_ref, updated_ref, pr_number=pr_number)
-    status = _poll_changed_literals_job(created["job_id"])
+    if tracker is not None:
+        # changed-literals' own phases are adopted from its status; this covers the moment
+        # before the first poll lands.
+        tracker.current = FETCHING_LITERALS_REPO
+    status = _poll_changed_literals_job(created["job_id"], tracker)
     if status["status"] == "error":
         error = status.get("error") or "changed-literals job failed"
         print(f"changed-literals: remote job {created['job_id']} itself reported status=error: {error[:500]!r}")
         raise cl_client.ChangedLiteralsError(error)
     base_ref, updated_ref = status.get("base", base_ref), status.get("updated", updated_ref)
 
-    findings = []
-    for finding in cancel_unchanged(_fetch_all_findings(created["job_id"])):
-        if finding["change"] != "removed":
-            findings.append(finding)  # a candidate replacement; see attach_replacements
-        elif finding["confidence"] >= min_removal_confidence:
-            matched = _match_literals(finding["text"], test_literals, min_literal_match_confidence)
-            findings.append({**finding, "matched_test_literals": matched})
-    findings = attach_replacements(findings)
+    with track(tracker, MATCHING_LITERALS):
+        findings = []
+        for finding in cancel_unchanged(_fetch_all_findings(created["job_id"])):
+            if finding["change"] != "removed":
+                findings.append(finding)  # a candidate replacement; see attach_replacements
+            elif finding["confidence"] >= min_removal_confidence:
+                matched = _match_literals(finding["text"], test_literals, min_literal_match_confidence)
+                findings.append({**finding, "matched_test_literals": matched})
+        findings = attach_replacements(findings)
 
     return {
         "test_repo": test_repo,
@@ -237,5 +252,6 @@ def compute_impact(
             max_length=invocation_max_length,
             extra_cases_allowed=extra_cases_allowed,
             missing_cases_allowed=missing_cases_allowed,
+            tracker=tracker,
         ),
     }

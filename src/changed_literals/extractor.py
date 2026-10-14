@@ -10,6 +10,7 @@ from .diff_parser import DiffFile, parse_diff
 from .finding import Finding
 from .languages import pathspecs_for, resolve_adapter
 from .languages.base import LanguageAdapter
+from .profiling import ANALYZING_LITERALS_DIFF, FETCHING_LITERALS_REPO, PhaseTracker, track
 from .walker import collect_findings
 
 
@@ -53,19 +54,15 @@ def _process_file(
     return findings
 
 
-def _extract_from_repo(
-    repo_dir: Path,
-    base_ref: str,
-    updated_ref: str,
-    languages: set[str] | None,
-    *,
-    force_fetch: bool,
-    pull_request: int | None,
-) -> list[Finding]:
+def _fetch_refs(repo_dir: Path, base_ref: str, updated_ref: str, *, force_fetch: bool, pull_request: int | None) -> None:
     if pull_request is not None:
         git_ops.fetch_pull_head(repo_dir, pull_request)
     git_ops.fetch_refs(repo_dir, [base_ref, updated_ref], force=force_fetch)
 
+
+def _analyze_diff(
+    repo_dir: Path, base_ref: str, updated_ref: str, languages: set[str] | None
+) -> list[Finding]:
     diff_text = git_ops.diff_unified0(repo_dir, base_ref, updated_ref, pathspecs_for(languages))
     diff_files = parse_diff(diff_text)
 
@@ -87,6 +84,7 @@ def extract(
     languages: set[str] | None = None,
     repo_cache: Path | None = None,
     pull_request: int | None = None,
+    tracker: PhaseTracker | None = None,
 ) -> list[Finding]:
     """Run the pipeline against repo_url.
 
@@ -98,12 +96,24 @@ def extract(
     so several invocations (even concurrent ones, since a bare repo has no
     worktree to contend over) can share it. Without it, a full clone is made
     in a temp dir and discarded once this call returns.
+
+    With a `tracker`, the two stages are reported as its `fetching_literals_repo` (clone or
+    reuse the cache, fetch the refs) and `analyzing_literals_diff` (diff, parse, AST walk)
+    phases; the first notes whether the repo cache was a hit.
     """
     if repo_cache is not None:
-        git_ops.ensure_repo_cache(repo_url, repo_cache)
-        return _extract_from_repo(repo_cache, base_ref, updated_ref, languages, force_fetch=True, pull_request=pull_request)
+        with track(tracker, FETCHING_LITERALS_REPO) as phase:
+            phase.caches["repo_clone"] = "hit" if repo_cache.exists() and any(repo_cache.iterdir()) else "miss"
+            git_ops.ensure_repo_cache(repo_url, repo_cache)
+            _fetch_refs(repo_cache, base_ref, updated_ref, force_fetch=True, pull_request=pull_request)
+        with track(tracker, ANALYZING_LITERALS_DIFF):
+            return _analyze_diff(repo_cache, base_ref, updated_ref, languages)
 
     with tempfile.TemporaryDirectory(prefix="changed-literals-") as tmp:
         repo_dir = Path(tmp) / "repo"
-        git_ops.clone(repo_url, repo_dir)
-        return _extract_from_repo(repo_dir, base_ref, updated_ref, languages, force_fetch=False, pull_request=pull_request)
+        with track(tracker, FETCHING_LITERALS_REPO) as phase:
+            phase.caches["repo_clone"] = "disabled"
+            git_ops.clone(repo_url, repo_dir)
+            _fetch_refs(repo_dir, base_ref, updated_ref, force_fetch=False, pull_request=pull_request)
+        with track(tracker, ANALYZING_LITERALS_DIFF):
+            return _analyze_diff(repo_dir, base_ref, updated_ref, languages)

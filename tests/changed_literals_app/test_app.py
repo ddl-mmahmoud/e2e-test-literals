@@ -1,4 +1,5 @@
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from changed_literals import app
 from changed_literals.git_ops import GitError
+from changed_literals.profiling import PHASES, PhaseTracker
 
 
 @pytest.fixture(autouse=True)
@@ -151,6 +153,116 @@ def test_cached_findings_recomputes_after_ttl_expiry(monkeypatch):
     time.sleep(0.02)
     app._cached_findings("repo", "base", "upd", None, force_refresh=False)
     assert len(calls) == 2
+
+
+_JOB = {"repo": "r", "base": "b", "updated": "u"}
+
+
+def _findings_cache_outcome(**kwargs) -> str:
+    tracker = PhaseTracker(PHASES)
+    app._cached_findings("repo", "base", "upd", None, tracker=tracker, **kwargs)
+    return tracker.snapshot()["phases"]["fetching_literals_repo"]["caches"]["findings"]
+
+
+def test_cached_findings_reports_the_findings_cache_outcome(monkeypatch):
+    def fake_extract(*a, tracker=None, **k):
+        with tracker.phase("fetching_literals_repo"):
+            pass
+        return []
+
+    monkeypatch.setattr(app, "extract", fake_extract)
+    monkeypatch.setattr(app, "CACHE_TTL_SECONDS", 0.05)
+
+    assert _findings_cache_outcome(force_refresh=False) == "miss"
+    assert _findings_cache_outcome(force_refresh=False) == "hit"
+    time.sleep(0.06)
+    assert _findings_cache_outcome(force_refresh=False) == "expired"
+    assert _findings_cache_outcome(force_refresh=True) == "bypassed"
+
+
+def test_a_findings_cache_hit_skips_both_phases(monkeypatch):
+    monkeypatch.setattr(app, "extract", lambda *a, **k: [])
+    app._cached_findings("repo", "base", "upd", None, force_refresh=False)
+
+    tracker = PhaseTracker(PHASES)
+    app._cached_findings("repo", "base", "upd", None, force_refresh=False, tracker=tracker)
+
+    phases = tracker.snapshot()["phases"]
+    for name in ("fetching_literals_repo", "analyzing_literals_diff"):
+        assert phases[name] == {"state": "done", "seconds": 0.0, "caches": {"findings": "hit"}}
+    assert phases["resolving_pull_request"] is None
+
+
+def test_job_status_reports_phase_and_profiling_when_done(monkeypatch):
+    def fake_extract(repo, base, updated, languages, repo_cache=None, pull_request=None, tracker=None):
+        with tracker.phase("fetching_literals_repo") as phase:
+            phase.caches["repo_clone"] = "hit"
+        with tracker.phase("analyzing_literals_diff"):
+            return []
+
+    monkeypatch.setattr(app, "extract", fake_extract)
+    _, body = _submit_and_await(_JOB)
+
+    assert body["status"] == "done"
+    assert body["phase"] == "done"
+    assert body["profiling"]["total_seconds"] >= 0
+    phases = body["profiling"]["phases"]
+    assert phases["resolving_pull_request"] is None
+    assert phases["fetching_literals_repo"]["caches"] == {"findings": "miss", "repo_clone": "hit"}
+    assert phases["analyzing_literals_diff"]["state"] == "done"
+
+
+def test_job_status_names_the_phase_a_running_job_is_in(monkeypatch):
+    release = threading.Event()
+
+    def fake_extract(repo, base, updated, languages, repo_cache=None, pull_request=None, tracker=None):
+        with tracker.phase("analyzing_literals_diff"):
+            release.wait(5)
+        return []
+
+    monkeypatch.setattr(app, "extract", fake_extract)
+    job_id = client.post("/changed-literals/jobs", json=_JOB).json()["job_id"]
+    try:
+        deadline = time.time() + 5
+        while client.get(f"/changed-literals/jobs/{job_id}").json()["phase"] != "analyzing_literals_diff":
+            assert time.time() < deadline
+            time.sleep(0.005)
+        body = client.get(f"/changed-literals/jobs/{job_id}").json()
+        assert body["status"] == "running"
+        assert body["profiling"]["phases"]["analyzing_literals_diff"]["state"] == "running"
+        assert body["profiling"]["phases"]["fetching_literals_repo"] is None
+    finally:
+        release.set()
+        _await_job(job_id)
+
+
+def test_job_status_marks_the_failing_phase_failed(monkeypatch):
+    def fake_extract(repo, base, updated, languages, repo_cache=None, pull_request=None, tracker=None):
+        with tracker.phase("fetching_literals_repo"):
+            raise GitError("boom")
+
+    monkeypatch.setattr(app, "extract", fake_extract)
+    _, body = _submit_and_await(_JOB)
+
+    assert body["status"] == "error"
+    assert body["phase"] == "error"
+    assert body["profiling"]["phases"]["fetching_literals_repo"]["state"] == "failed"
+
+
+def test_a_real_job_profiles_the_repo_fetch_and_diff_analysis(tmp_path, monkeypatch):
+    repo, base, updated = _make_repo(tmp_path)
+    monkeypatch.setattr(app, "REPO_CACHE_DIR", str(tmp_path / "cache"))
+
+    def phases_of_a_job() -> dict:
+        _, body = _submit_and_await({"repo": str(repo), "base": base, "updated": updated, "refresh": True})
+        assert body["status"] == "done"
+        return body["profiling"]["phases"]
+
+    first, second = phases_of_a_job(), phases_of_a_job()
+
+    assert first["fetching_literals_repo"]["caches"] == {"findings": "bypassed", "repo_clone": "miss"}
+    assert second["fetching_literals_repo"]["caches"] == {"findings": "bypassed", "repo_clone": "hit"}
+    assert first["analyzing_literals_diff"]["state"] == "done"
 
 
 def test_prune_expired_jobs_removes_only_old_ones():
@@ -332,7 +444,7 @@ def test_pr_job_resolves_refs_and_reports_them(monkeypatch):
     seen = {}
     monkeypatch.setattr(app, "resolve_pull_request", lambda repo, number: ("basesha", "headsha"))
 
-    def fake_extract(repo, base, updated, languages, repo_cache=None, pull_request=None):
+    def fake_extract(repo, base, updated, languages, repo_cache=None, pull_request=None, tracker=None):
         seen.update(repo=repo, base=base, updated=updated, pull_request=pull_request)
         return []
 

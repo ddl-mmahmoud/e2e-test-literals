@@ -14,6 +14,7 @@ import pytest
 from routing_helpers import write_fake_routing_repo
 
 from e2e_test_literals.service import config, generation
+from e2e_test_literals.service.profiling import PHASES, PhaseTracker
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -242,3 +243,34 @@ def test_resolve_and_generate_rebuilds_a_db_that_predates_string_kind(tmp_path: 
         assert "string_kind" in [row[1] for row in conn.execute("PRAGMA table_info(literals)")]
     finally:
         conn.close()
+
+
+def test_tracker_reports_a_test_db_miss_then_hit_and_the_repo_clone_cache(tmp_path: Path, generation_env):
+    repo = _make_test_repo(tmp_path)
+
+    first = PhaseTracker(PHASES)
+    generation.resolve_and_generate(str(repo), "main", tracker=first)
+    second = PhaseTracker(PHASES)
+    generation.resolve_and_generate(str(repo), "main", tracker=second)
+
+    first_phases, second_phases = first.snapshot()["phases"], second.snapshot()["phases"]
+    assert first_phases["resolving_test_revision"]["caches"] == {"repo_clone": "miss"}
+    assert first_phases["populating_test_db"]["caches"] == {"test_db": "miss"}
+    assert second_phases["resolving_test_revision"]["caches"] == {"repo_clone": "hit"}
+    assert second_phases["populating_test_db"]["caches"] == {"test_db": "hit"}
+    assert second_phases["populating_test_db"]["lock_wait_seconds"] >= 0
+    assert second_phases["populating_test_db"]["seconds"] < first_phases["populating_test_db"]["seconds"]
+
+
+def test_tracker_reports_a_db_with_an_old_schema_as_invalidated(tmp_path: Path, generation_env):
+    repo = _make_test_repo(tmp_path)
+    sha = generation.resolve_and_generate(str(repo), "main")
+    conn = sqlite3.connect(generation.db_path(sha))
+    conn.execute("DROP TABLE meta")
+    conn.commit()
+    conn.close()
+
+    tracker = PhaseTracker(PHASES)
+    generation.resolve_and_generate(str(repo), "main", tracker=tracker)
+
+    assert tracker.snapshot()["phases"]["populating_test_db"]["caches"] == {"test_db": "invalidated"}
