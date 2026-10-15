@@ -11,8 +11,10 @@ the same split `generation.py`/`jobs.py` use for revision builds.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
+from urllib.parse import urlparse
 
 from .. import matching
 from . import changed_literals_client as cl_client
@@ -30,6 +32,22 @@ DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE = matching.DEFAULT_MIN_LITERAL_MATCH_CONFID
 
 _POLL_INTERVAL_SECONDS = 1.0
 _RESULT_PAGE_SIZE = 2000  # changed-literals' own MAX_PAGE_SIZE
+
+
+# `https://<host>/<owner>/<repo>/pull/<n>`, optionally followed by a tab of the PR
+# (`/files`, `/commits`, ...), a query or a fragment -- whatever the browser's address bar held.
+_PR_URL_PATH = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<number>[0-9]+)(?:/.*)?$")
+
+
+def parse_pr_url(pr_url: str) -> tuple[str, int]:
+    """`(literals_repo, pr_number)` of a GitHub pull request URL such as
+    `https://github.com/cerebrotech/frontend-web-ui-service/pull/2853`. `literals_repo` is the
+    repo's https URL. Raises ValueError if it isn't one."""
+    parsed = urlparse(pr_url.strip())
+    match = _PR_URL_PATH.match(parsed.path)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc or not match or int(match["number"]) < 1:
+        raise ValueError(f"not a pull request URL like https://github.com/<owner>/<repo>/pull/<number>: {pr_url!r}")
+    return f"https://{parsed.netloc}/{match['owner']}/{match['repo']}", int(match["number"])
 
 
 def _load_test_literals(sha: str) -> list[dict]:

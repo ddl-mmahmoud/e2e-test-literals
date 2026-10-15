@@ -80,20 +80,26 @@ _TEMPLATE = r"""<!doctype html>
         <input type="text" id="test_ref" value="main">
       </div>
     </div>
-    <div class="field">
-      <label for="literals_repo">Literals repo</label>
-      <input type="text" id="literals_repo" value="__LITERALS_REPO__" required>
-      <small>The product repo whose strings changed.</small>
-    </div>
   </fieldset>
 
   <fieldset>
     <legend>Change to analyze</legend>
     <div class="modes">
-      <label><input type="radio" name="mode" value="pr" checked> Pull request</label>
+      <label><input type="radio" name="mode" value="pr_url" checked> PR URL</label>
+      <label><input type="radio" name="mode" value="pr"> PR number</label>
       <label><input type="radio" name="mode" value="refs"> Two refs</label>
     </div>
-    <div id="mode-pr" class="field">
+    <div id="mode-pr-url" class="field">
+      <label for="pr_url">PR URL</label>
+      <input type="text" id="pr_url" placeholder="https://github.com/cerebrotech/frontend-web-ui-service/pull/2853">
+      <small>The pull request to check; its repo is the one whose strings changed. Diffs the PR's base against its branch.</small>
+    </div>
+    <div id="mode-repo" class="field" hidden>
+      <label for="literals_repo">Literals repo</label>
+      <input type="text" id="literals_repo" value="__LITERALS_REPO__">
+      <small>The product repo whose strings changed.</small>
+    </div>
+    <div id="mode-pr" class="field" hidden>
       <label for="pr_number">PR number</label>
       <input type="number" id="pr_number" min="1" step="1">
       <small>Diffs the PR's base against its branch.</small>
@@ -172,12 +178,19 @@ function currentMode() {
 }
 
 function syncMode() {
-  const pr = currentMode() === "pr";
+  const mode = currentMode();
+  const prUrl = mode === "pr_url";
+  const pr = mode === "pr";
+  const refs = mode === "refs";
+  $("mode-pr-url").hidden = !prUrl;
+  $("mode-repo").hidden = prUrl;
   $("mode-pr").hidden = !pr;
-  $("mode-refs").hidden = pr;
+  $("mode-refs").hidden = !refs;
+  $("pr_url").required = prUrl;
+  $("literals_repo").required = !prUrl;
   $("pr_number").required = pr;
-  $("base_ref").required = !pr;
-  $("updated_ref").required = !pr;
+  $("base_ref").required = refs;
+  $("updated_ref").required = refs;
 }
 
 // A blank optional field is left out of the body, so the API's own default applies.
@@ -190,15 +203,21 @@ function buildPayload() {
   const payload = {
     test_repo: $("test_repo").value.trim(),
     test_ref: $("test_ref").value.trim() || "main",
-    literals_repo: $("literals_repo").value.trim(),
     extra_cases_allowed: numberOrNull("extra_cases_allowed"),
     missing_cases_allowed: numberOrNull("missing_cases_allowed"),
   };
-  if (currentMode() === "pr") {
-    payload.pr_number = numberOrNull("pr_number");
+  const mode = currentMode();
+  if (mode === "pr_url") {
+    // The API splits a PR URL into the repo and PR number itself.
+    payload.pr_url = $("pr_url").value.trim();
   } else {
-    payload.base_ref = $("base_ref").value.trim();
-    payload.updated_ref = $("updated_ref").value.trim();
+    payload.literals_repo = $("literals_repo").value.trim();
+    if (mode === "pr") {
+      payload.pr_number = numberOrNull("pr_number");
+    } else {
+      payload.base_ref = $("base_ref").value.trim();
+      payload.updated_ref = $("updated_ref").value.trim();
+    }
   }
   for (const id of ["min_removal_confidence", "min_literal_match_confidence", "min_invocation_confidence", "invocation_max_length"]) {
     const value = numberOrNull(id);

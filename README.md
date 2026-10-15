@@ -50,10 +50,11 @@ this exact flow as a runnable script -- edit its placeholders and run it.
 |---|---|---|
 | `test_repo` | required | Git URL of the e2e test repo to index. |
 | `test_ref` | `main` | Branch/tag/SHA of the test repo. |
-| `literals_repo` | required | Git URL of the product repo whose UI strings changed. |
+| `literals_repo` | required\*\* | Git URL of the product repo whose UI strings changed. |
 | `base_ref` | required\* | Pre-change ref of `literals_repo`. |
 | `updated_ref` | required\* | Post-change ref of `literals_repo`. |
 | `pr_number` | omitted | \*Instead of `base_ref`/`updated_ref`: a GitHub pull request of `literals_repo`; its base is compared against its branch tip. Exactly one of the two forms is required. |
+| `pr_url` | omitted | \*\*Instead of `literals_repo` and the above: the URL of a GitHub pull request, e.g. `https://github.com/cerebrotech/frontend-web-ui-service/pull/2853`. The service takes the repo and PR number from it (a trailing `/files`, query or fragment is fine); it can't be combined with `literals_repo`, `pr_number` or `base_ref`/`updated_ref`. The easiest way to submit a PR. |
 | `min_removal_confidence` | `0.85` | Only removed strings that `changed_literals` scores at or above this are reported (how likely it is to really be user-facing UI text). |
 | `min_literal_match_confidence` | `0.7` | Minimum match score between a removed string and a test literal for it to count as a hit. How a literal is compared depends on its kind of string; see below. |
 | `min_invocation_confidence` | `0.0` | Only cases matched at or above this get into `recommended_invocations` (a match's confidence is the lower of the removal's `confidence` and its `match_confidence`). The default recommends every matched case. |
@@ -61,7 +62,7 @@ this exact flow as a runnable script -- edit its placeholders and run it.
 | `extra_cases_allowed` | omitted | Tag substitution (see below): most cases, summed over all lines, that shared tags may run beyond the matched ones. |
 | `missing_cases_allowed` | omitted | Tag substitution: most matched cases, summed over all lines, that may keep an explicit `testrail(N)` tag because no shared tag selects them. |
 
-A `pr_number` is resolved with one GitHub REST call, authenticated with the same
+A `pr_number` (or `pr_url`) is resolved with one GitHub REST call, authenticated with the same
 `GITHUB_LITERALS_PAT` used for cloning (no `gh` CLI), and works for PRs from forks.
 The result reports the resolved commit SHAs as `base_ref`/`updated_ref` (and echoes
 `pr_number`).

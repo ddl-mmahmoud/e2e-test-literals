@@ -223,6 +223,51 @@ def test_impact_request_accepts_pr_number_in_place_of_refs(impact_client: TestCl
     assert seen["kwargs"]["pr_number"] == 3
 
 
+_PR_URL = "https://github.com/cerebrotech/frontend-web-ui-service/pull/2853"
+
+
+def test_impact_request_accepts_pr_url_alone(impact_client: TestClient, monkeypatch):
+    seen = {}
+
+    def fake_compute(*a, **k):
+        seen["args"], seen["kwargs"] = a, k
+        return {"total": 0, "findings": []}
+
+    monkeypatch.setattr(impact_jobs, "compute_impact", fake_compute)
+    body = {"test_repo": "test-repo", "pr_url": _PR_URL}
+
+    resp = impact_client.post("/changed-literals-impact", json=body)
+
+    assert resp.status_code == 202
+    assert _await_job(impact_client, resp.json()["job_id"])["status"] == "done"
+    assert seen["args"][2] == "https://github.com/cerebrotech/frontend-web-ui-service"
+    assert seen["args"][3:5] == (None, None)
+    assert seen["kwargs"]["pr_number"] == 2853
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"literals_repo": "product-repo"},
+        {"pr_number": 3},
+        {"base_ref": "base", "updated_ref": "updated"},
+        {"pr_url": "https://github.com/cerebrotech/frontend-web-ui-service/issues/2853"},
+        {"pr_url": "https://github.com/cerebrotech/frontend-web-ui-service/pull/abc"},
+        {"pr_url": "https://github.com/cerebrotech/frontend-web-ui-service/pull/0"},
+        {"pr_url": "git@github.com:cerebrotech/frontend-web-ui-service.git"},
+        {"pr_url": ""},
+    ],
+)
+def test_impact_request_rejects_a_bad_or_conflicting_pr_url(impact_client: TestClient, overrides):
+    body = {"test_repo": "test-repo", "pr_url": _PR_URL, **overrides}
+    assert impact_client.post("/changed-literals-impact", json=body).status_code == 422
+
+
+def test_literals_repo_is_required_without_pr_url(impact_client: TestClient):
+    body = {"test_repo": "test-repo", "pr_number": 3}
+    assert impact_client.post("/changed-literals-impact", json=body).status_code == 422
+
+
 def _report_result() -> dict:
     literal = {
         "value": "Access",

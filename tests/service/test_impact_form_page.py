@@ -44,6 +44,16 @@ def test_every_api_parameter_has_a_field():
         assert f'id="{name}"' in page, name
 
 
+def test_literals_repo_sits_in_the_change_box_and_pr_url_is_the_default_mode():
+    page = render_form()
+    change_box = re.search(r"<legend>Change to analyze</legend>(.*?)</fieldset>", page, re.S).group(1)
+    assert 'id="literals_repo"' in change_box
+    assert 'id="pr_url"' in change_box
+    assert re.search(r'value="pr_url" checked', page)
+    repos_box = re.search(r"<legend>Repositories</legend>(.*?)</fieldset>", page, re.S).group(1)
+    assert "literals_repo" not in repos_box
+
+
 def test_page_requests_only_paths_relative_to_itself():
     script = _script()
     assert 'fetch("changed-literals-impact"' in script

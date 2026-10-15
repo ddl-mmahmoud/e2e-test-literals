@@ -661,3 +661,30 @@ def test_tag_substitution_is_not_run_for_a_revision_without_routing_data(monkeyp
     phases = tracker.snapshot()["phases"]
     assert phases["computing_invocations"]["state"] == "done"
     assert phases["optimizing_invocation_tags"] is None
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        (
+            "https://github.com/cerebrotech/frontend-web-ui-service/pull/2853",
+            ("https://github.com/cerebrotech/frontend-web-ui-service", 2853),
+        ),
+        (
+            "  https://github.com/cerebrotech/frontend-web-ui-service/pull/2853/files?w=1#diff  ",
+            ("https://github.com/cerebrotech/frontend-web-ui-service", 2853),
+        ),
+        ("https://ghe.example.com/o/r/pull/7/", ("https://ghe.example.com/o/r", 7)),
+    ],
+)
+def test_parse_pr_url(url, expected):
+    assert impact.parse_pr_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["", "o/r/pull/1", "ftp://github.com/o/r/pull/1", "https://github.com/o/r", "https://github.com/o/r/pull/x"],
+)
+def test_parse_pr_url_rejects_other_strings(url):
+    with pytest.raises(ValueError):
+        impact.parse_pr_url(url)

@@ -43,7 +43,9 @@ it's done -- mirrors changed-literals' app.py:
                     (or "pr_number": <GitHub PR of literals_repo> in place of
                     base_ref/updated_ref: diffs the PR's base against its branch, via
                     the same GITHUB_LITERALS_PAT used for cloning; the result reports
-                    the SHAs it resolved to as base_ref/updated_ref)
+                    the SHAs it resolved to as base_ref/updated_ref; or "pr_url":
+                    "https://github.com/<owner>/<repo>/pull/<n>" alone, which names both
+                    literals_repo and pr_number, so omit those)
                     "min_literal_match_confidence": 0.7,
                     "min_invocation_confidence": 0.0, "invocation_max_length": 300,
                     "extra_cases_allowed": null, "missing_cases_allowed": null}
@@ -176,10 +178,11 @@ class RevisionRequest(BaseModel):
 class ImpactRequest(BaseModel):
     test_repo: str
     test_ref: str = DEFAULT_REF
-    literals_repo: str
+    literals_repo: str | None = None
     base_ref: str | None = None
     updated_ref: str | None = None
     pr_number: int | None = Field(None, ge=1)
+    pr_url: str | None = None
     min_removal_confidence: float = impact.DEFAULT_MIN_REMOVAL_CONFIDENCE
     min_literal_match_confidence: float = impact.DEFAULT_MIN_LITERAL_MATCH_CONFIDENCE
     min_invocation_confidence: float = impact.DEFAULT_MIN_INVOCATION_CONFIDENCE
@@ -189,8 +192,18 @@ class ImpactRequest(BaseModel):
 
     @model_validator(mode="after")
     def _exactly_one_way_to_name_the_diff(self) -> ImpactRequest:
+        """Exactly one of: base_ref+updated_ref (with literals_repo), pr_number (with
+        literals_repo), or pr_url -- which names the repo and the PR itself, and is
+        resolved here into `literals_repo` and `pr_number` so nothing downstream knows of it."""
+        if self.pr_url is not None:
+            if self.literals_repo or self.pr_number is not None or self.base_ref or self.updated_ref:
+                raise ValueError("pr_url can't be combined with literals_repo, pr_number or base_ref/updated_ref")
+            self.literals_repo, self.pr_number = impact.parse_pr_url(self.pr_url)
+            return self
+        if not self.literals_repo:
+            raise ValueError("literals_repo is required unless pr_url is given")
         if self.pr_number is None and not (self.base_ref and self.updated_ref):
-            raise ValueError("give either base_ref and updated_ref, or pr_number")
+            raise ValueError("give either base_ref and updated_ref, or pr_number, or pr_url")
         if self.pr_number is not None and (self.base_ref or self.updated_ref):
             raise ValueError("pr_number can't be combined with base_ref/updated_ref")
         return self
@@ -542,7 +555,8 @@ def index() -> dict:
             f"GET {config.PREFIX}revisions lists revisions already built. "
             f"POST {config.PREFIX}changed-literals-impact  body: {{\"test_repo\": ..., "
             '"test_ref": "main", "literals_repo": ..., "base_ref": ..., "updated_ref": ...,'
-            ' (or "pr_number": ... in place of base_ref/updated_ref)'
+            ' (or "pr_number": ... in place of base_ref/updated_ref, or just "pr_url": ...'
+            ' in place of literals_repo and the rest)'
             ' "min_removal_confidence": 0.85, "min_literal_match_confidence": 0.7} -> 202, '
             "same job shape, result is the annotated changed-literals report."
         ),
